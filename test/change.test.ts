@@ -114,3 +114,33 @@ test("one change in a session of 200 sources costs one analysis", async () => {
   assert.equal(handler.calls, calls + 1);
   session.close();
 });
+
+test("close is final: work running or queued at close never watches again", async () => {
+  const memory = createMemoryHost({ "/a.md": "a\n", "/b.md": "b\n", "/c.md": "c\n" });
+  let release = () => {};
+  const gate = new Promise<void>(resolve => (release = resolve));
+  let setsAfterClose = 0;
+  let closed = false;
+  const host: Host = {
+    ...memory,
+    async read(location) {
+      if (location === "/b.md") await gate;
+      return memory.read(location);
+    },
+    watch(onChange) {
+      const inner = memory.watch(onChange);
+      return { set: locations => (closed && setsAfterClose++, inner.set(locations)), close: inner.close };
+    },
+  };
+  const session = await openSession({ host, entry: "/a.md", handlers: [include] });
+  const running = session.addRoot("/b.md");
+  const queued = session.addRoot("/c.md");
+  await new Promise(resolve => setTimeout(resolve, 0));
+  session.close();
+  closed = true;
+  release();
+  await Promise.all([running, queued]);
+
+  assert.equal(setsAfterClose, 0);
+  assert.equal(session.sources().some(s => s.location === "/c.md"), false);
+});

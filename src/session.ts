@@ -59,10 +59,14 @@ export async function openSession(options: {
   const listeners = new Set<(change: Change) => void>();
   const watch = host.watch(locations => void serialize(() => absorb(locations)));
   let queue: Promise<unknown> = Promise.resolve();
+  let closed = false;
 
-  /** Runs session work one piece at a time, so a change batch never interleaves with another. */
-  function serialize<T>(work: () => Promise<T>): Promise<T> {
-    const next = queue.then(work);
+  /**
+   * Runs session work one piece at a time, so a change batch never interleaves with another.
+   * Work still queued at `close()` never runs.
+   */
+  function serialize(work: () => Promise<void>): Promise<void> {
+    const next = queue.then(() => (closed ? undefined : work()));
     queue = next.catch(() => undefined);
     return next;
   }
@@ -155,7 +159,9 @@ export async function openSession(options: {
       if (node.state !== "external") watched.add(node.key);
       for (const l of node.links) for (const probe of l.probes) watched.add(probe);
     }
-    watch.set([...watched]);
+    // Work already running at `close()` finishes, but must not watch again: a Node host would
+    // open directory watchers that keep the process alive.
+    if (!closed) watch.set([...watched]);
     return { added, removed };
   }
 
@@ -301,6 +307,7 @@ export async function openSession(options: {
       return () => void listeners.delete(listener);
     },
     close() {
+      closed = true;
       watch.close();
       listeners.clear();
     },
