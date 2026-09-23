@@ -6,4 +6,5 @@ A library that knows, for one rendered document, every source file involved, how
 
 - [Vision](docs/vision.md): what it is for, who it serves, what it is not.
 - [Design principles](docs/principles.md): how it decides things, each principle with what it forbids.
+- [Glossary](docs/glossary.md): every christened name, and which meaning of "provenance" is ours.
 - [Design synthesis](docs/design-synthesis.md): the day-zero design the vision was drawn from.

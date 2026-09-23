@@ -81,12 +81,12 @@ Provenance edits bytes, never trees. A language-aware consumer computes a splice
 
 ## Languages are plugins; nesting is delegation
 
-The core knows no language. A handler hands an embedded region, such as a `<style>` block in HTML, to the handler for that region's language, with a map back to the host source's positions.
+The core knows no language. A handler hands an embedded region, such as a `<style>` block in HTML, to the handler for that region's language, with a map back to the enclosing source's positions.
 
 **Forbids:**
 - language knowledge in the core;
 - a handler parsing another language's region itself;
-- an embedded finding whose address cannot be mapped back to a real source. Where the host escapes text, the region is marked **opaque**, and positions inside it map to the whole region.
+- an embedded finding whose address cannot be mapped back to a real source. Where the enclosing source escapes text, the region is marked **opaque**, and positions inside it map to the whole region.
 
 **Why:** a font named in a `url()` inside a `<style>` inside raw HTML inside Markdown must still point at the right bytes of the right Markdown file. (Volar's mappings.)
 

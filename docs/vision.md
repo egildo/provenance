@@ -60,7 +60,7 @@ The whole vision is not the first build. The kernel comes first: sources, addres
 ## Open, and deliberately left open here
 
 - **Text that is not UTF-8.** Addresses are over stored bytes, so a byte-order mark is simply the first bytes of the file. How a handler receives non-UTF-8 text, and how the commit guarantees hold through decode and re-encode, is not decided.
-- **Edits inside escaped text**, such as an HTML entity in a `style` attribute: refused in the first version, or re-escaped by the host handler.
+- **Edits inside escaped text**, such as an HTML entity in a `style` attribute: refused in the first version, or re-escaped by the enclosing source's handler.
 - **Multi-file atomicity**: best-effort renames with rollback, or a small journal.
 
 The [design synthesis](design-synthesis.md) of 2026-09-22 carries the rest of the open questions, and [the design principles](principles.md) carry the rules. Neither is restated here.
