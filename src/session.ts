@@ -2,7 +2,7 @@
 // Rules and states are specs/source-graph-kernel/data-model.md's.
 
 import { byteOffsets } from "./offsets.ts";
-import { resolve } from "./resolvers.ts";
+import { hasScheme, resolve } from "./resolvers.ts";
 import type {
   Change,
   Edge,
@@ -19,6 +19,8 @@ import type {
 interface Link {
   readonly from: { readonly start: number; readonly end: number };
   readonly request: string;
+  /** What is resolved: the request, or the root-absolute request it joins to under a rooted base. */
+  readonly lookup: string;
   readonly kind: "requires" | "candidate";
   /** The directory (or URL) the request resolves against. */
   readonly base: string;
@@ -40,6 +42,21 @@ async function sha256(bytes: Uint8Array): Promise<string> {
   // `slice` copies onto a plain ArrayBuffer: digest refuses a view that may be shared memory.
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes.slice()));
   return Array.from(digest, b => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** A root-absolute URL path, such as `<base href="/">`'s: a path on the embedder's site, never a directory. */
+const isRooted = (base: string) =>
+  base.startsWith("/") && !base.startsWith("//");
+
+/**
+ * Joins a relative request to a rooted base the way a browser does, so it resolves as the
+ * root-absolute request that results, which is the embedder's (research.md, Resolution). Any other
+ * request stays as written.
+ */
+function joined(request: string, base: string | undefined): string {
+  if (base === undefined || !isRooted(base) || request === "" || /^[#/]/.test(request) || hasScheme(request)) return request;
+  const url = new URL(request, new URL(base, "http://site"));
+  return url.pathname + url.search + url.hash;
 }
 
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -82,7 +99,7 @@ export async function openSession(options: {
 
   /** Resolves a link in place. False means the request makes no edge at all (`data:`, a fragment). */
   async function link(link: Link): Promise<boolean> {
-    const found = await resolve(link.request, link.base, host, resolvers);
+    const found = await resolve(link.lookup, link.base, host, resolvers);
     if (found === null) return false;
     if ("external" in found) {
       link.target = { key: found.external, external: true };
@@ -96,7 +113,8 @@ export async function openSession(options: {
 
   function baseFor(key: string, base: string | undefined): string {
     const directory = host.paths.dirname(key);
-    if (base === undefined) return directory;
+    if (base === undefined || isRooted(base)) return directory;
+    if (base.startsWith("//")) return `https:${base}`;
     if (/^https?:/i.test(base)) return base;
     const resolved = host.paths.resolve(directory, base);
     return base.endsWith("/") ? resolved : host.paths.dirname(resolved);
@@ -127,7 +145,7 @@ export async function openSession(options: {
     const base = baseFor(key, findings.base);
     const links: Link[] = [];
     for (const [k, r] of findings.requests.entries()) {
-      const l: Link = { from: { start: offsets[2 * k], end: offsets[2 * k + 1] }, request: r.request, kind: r.kind, base, probes: [] };
+      const l: Link = { from: { start: offsets[2 * k], end: offsets[2 * k + 1] }, request: r.request, lookup: joined(r.request, findings.base), kind: r.kind, base, probes: [] };
       if (await link(l)) links.push(l);
     }
     return { id, key, state: "analysed", version, links };

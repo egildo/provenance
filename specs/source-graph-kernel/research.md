@@ -123,7 +123,10 @@ and not starting with `/`; strip `?query` and `#fragment`, percent-decode, and r
 directory of the source's location (or the handler's base) with the host's `paths.resolve`; the
 one location computed is the probe, and `host.canonicalize` answering `undefined` means nothing is
 there. **External**: `http:`, `https:` and `//host/…` (read as `https:`) become external leaves, never
-read; so does a relative request when the handler's base is a web URL (`<base href="https://…">`).
+read; so does a relative request when the handler's base is a web URL (`<base href="https://…">`
+or `//host/…`). A base that is a root-absolute path (`<base href="/">`, `<base href="/docs/">`) is a
+URL path, not a directory: a relative request is joined to it the way a browser joins it, and
+resolves as the root-absolute request that results (`style.css` under `/docs/` as `/docs/style.css`).
 **None**: `data:`, an empty request, and a request that is only a fragment (`url(#glow)`, `href="#icon"`), make no
 edge. Any other request, including a root-absolute `/…`, is unresolved
 with no probes unless an embedder-supplied resolver claims it.
