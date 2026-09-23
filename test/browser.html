@@ -1,0 +1,70 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Provenance browser check</title>
+<!--
+  The manual browser check (specs/source-graph-kernel/quickstart.md). Build with `npm run build`,
+  serve the repository root over http://localhost, and open /test/browser.html.
+  The CSS handler needs a bundler in a browser, so the scenarios use HTML sources.
+-->
+<script type="importmap">
+  {
+    "imports": {
+      "parse5": "/node_modules/parse5/dist/index.js",
+      "entities/decode": "/node_modules/entities/dist/decode.js",
+      "entities/escape": "/node_modules/entities/dist/escape.js"
+    }
+  }
+</script>
+<pre id="out">running…</pre>
+<script type="module">
+  import { openSession } from "/dist/index.js";
+  import { html } from "/dist/html.js";
+  import { createMemoryHost } from "/dist/memory.js";
+
+  const out = document.getElementById("out");
+  const check = (ok, what) => {
+    if (!ok) throw new Error(what);
+  };
+  const decode = bytes => new TextDecoder().decode(bytes);
+
+  try {
+    // Story 1: every source, every edge pointing at the bytes that asked.
+    const host = createMemoryHost({
+      "/d/a.html": '<p>café ✓ 𝄞</p><iframe src="b.html"></iframe><img src="p.png" srcset="p2.png 2x">',
+      "/d/b.html": '<script src="s.js"><\/script><img src="missing.png">',
+      "/d/p.png": new Uint8Array([0x89, 0x50]),
+      "/d/p2.png": new Uint8Array([0x89, 0x51]),
+      "/d/s.js": "console.log(1)",
+    });
+    const session = await openSession({ host, entry: "/d/a.html", handlers: [html] });
+    const states = Object.fromEntries(session.sources().map(s => [s.location, s.state]));
+    check(states["/d/a.html"] === "analysed" && states["/d/b.html"] === "analysed", "HTML sources analysed");
+    check(states["/d/p.png"] === "leaf" && states["/d/s.js"] === "leaf", "leaves");
+    for (const source of session.sources()) {
+      const read = await host.read(source.location);
+      for (const edge of session.edgesFrom(source.id)) {
+        check(decode(read.bytes.slice(edge.from.start, edge.from.end)) === edge.request, `range of ${edge.request}`);
+      }
+    }
+    check(session.unresolved().length === 1, "one unresolved edge");
+
+    // Story 3: one change, one report; identical bytes, none.
+    const changes = [];
+    session.onChange(change => changes.push(change));
+    const settle = async () => {
+      await new Promise(resolve => setTimeout(resolve, 0));
+      await session.addRoot("/d/a.html");
+    };
+    host.write("/d/b.html", '<script src="s.js"><\/script>');
+    await settle();
+    check(changes.length === 1 && changes[0].changed.length === 1 && session.unresolved().length === 0, "change reported");
+    host.write("/d/b.html", '<script src="s.js"><\/script>');
+    await settle();
+    check(changes.length === 1, "identical bytes report nothing");
+
+    out.textContent = "PASS";
+  } catch (error) {
+    out.textContent = `FAIL: ${error.message}`;
+    console.error(error);
+  }
+</script>

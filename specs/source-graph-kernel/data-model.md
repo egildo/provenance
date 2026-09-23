@@ -18,7 +18,8 @@ States:
 - `analysed`: claimed, decoded, analysed.
 - `leaf`: no handler claims it; read and hashed, never decoded.
 - `undecodable`: claimed, but not valid UTF-8; hashed, not analysed.
-- `refused`: the host refused the read; carries the host's `reason`.
+- `refused`: the host refused the read; carries the host's `reason`. A root with nothing at its
+  location is `refused` with the host's reason, and heals like any other when the file appears.
 - `external`: an `http(s)` target; never read.
 
 One source per canonical location. A source exists while it is a root or the target of an edge
@@ -70,4 +71,5 @@ the text the handler received. Converted to byte offsets on receipt (`offsets.ts
    Every edge that probed one of them is re-resolved. Then reachability is recomputed, new
    sources analysed, unreachable ones dropped, the watched set updated, and one change reported.
 4. **Report.** `{ added, removed, changed }`, lists of source ids; `changed` means a new version.
-   A batch that changes nothing reports nothing.
+   Sent after each batch, and after `addRoot` and `removeRoot`. Anything that changes nothing
+   reports nothing.

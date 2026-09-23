@@ -9,7 +9,7 @@ embedder loads only what it uses (`pay-for-loaded-handlers`).
 | `@egildo/provenance/css` | `css: Handler` | `postcss`, `postcss-safe-parser`, `postcss-value-parser` |
 | `@egildo/provenance/html` | `html: Handler` | `parse5` |
 | `@egildo/provenance/memory` | `createMemoryHost` | nothing outside the core |
-| `@egildo/provenance/node` | `createNodeHost` | `node:fs`, `node:path` |
+| `@egildo/provenance/node` | `createNodeHost` | `node:fs`, `node:path`, `node:os` |
 
 ## Core
 
@@ -96,13 +96,14 @@ makes no edge.
 ## Resolvers
 
 ```ts
+type Resolution =
+  | { readonly probes: readonly string[]; readonly target?: string }     // local; target is canonical
+  | { readonly external: string }                                        // never read
+  | null;                                                                // no edge at all
+
 interface Resolver {
   claims(request: string): boolean;
-  resolve(request: string, base: string, host: Host): Promise<
-    | { readonly probes: readonly string[]; readonly target?: string }   // local; target is canonical
-    | { readonly external: string }                                      // never read
-    | null                                                               // no edge at all
-  >;
+  resolve(request: string, base: string, host: Host): Promise<Resolution>;   // base: a directory, or a web URL
 }
 ```
 

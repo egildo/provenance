@@ -103,6 +103,8 @@ src/
 test/
 ├── session.test.ts
 ├── offsets.test.ts
+├── memory.test.ts
+├── resolvers.test.ts
 ├── css.test.ts
 ├── html.test.ts
 ├── heal.test.ts
@@ -110,6 +112,7 @@ test/
 ├── node-host.test.ts
 ├── cascata.test.ts
 ├── boundary.test.ts
+├── helpers.ts           # the test include handler and waiting helpers
 └── browser.html         # manual browser check
 ```
 

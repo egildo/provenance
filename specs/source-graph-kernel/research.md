@@ -122,8 +122,9 @@ a hand-written HTML tokenizer (rejected: the tree builder's mode switches are th
 and not starting with `/`; strip `?query` and `#fragment`, percent-decode, and resolve against the
 directory of the source's location (or the handler's base) with the host's `paths.resolve`; the
 one location computed is the probe, and `host.canonicalize` answering `undefined` means nothing is
-there. **External**: `http:`, `https:` and `//host/…` become external leaves, never read.
-**None**: `data:`, and a request that is only a fragment (`url(#glow)`, `href="#icon"`), make no
+there. **External**: `http:`, `https:` and `//host/…` (read as `https:`) become external leaves, never
+read; so does a relative request when the handler's base is a web URL (`<base href="https://…">`).
+**None**: `data:`, an empty request, and a request that is only a fragment (`url(#glow)`, `href="#icon"`), make no
 edge. Any other request, including a root-absolute `/…`, is unresolved
 with no probes unless an embedder-supplied resolver claims it.
 

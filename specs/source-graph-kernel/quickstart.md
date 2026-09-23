@@ -16,7 +16,7 @@ npm test
 
 `npm test` runs `tsc --noEmit` and then `node --test`. Every scenario below is a test in `test/`;
 all run against the memory host, and the ones marked *(node)* also against the Node host on a
-temporary directory.
+temporary directory, in `node-host.test.ts`.
 
 | Spec scenario | Test | Expected |
 | --- | --- | --- |
@@ -25,9 +25,9 @@ temporary directory.
 | Story 1, non-ASCII prefix | `offsets.test.ts` | with `café ✓ 𝄞` before a request, `from` counts `é`, `✓` and `𝄞` as 2, 3 and 4 bytes, not as 1, 1 and 2 string units |
 | Story 1, cycle | `session.test.ts` | both edges recorded, one cycle of two sources reported |
 | Story 1, roots | `session.test.ts` | an added stylesheet root and its font join; removing the root drops both |
-| Story 2, heal *(node)* | `heal.test.ts` | unresolved edge with one probe; after `write`, resolved, one handler call |
+| Story 2, heal *(node)* | `heal.test.ts`; `node-host.test.ts` | unresolved edge with one probe; after `write`, resolved, one handler call |
 | Story 2, refused read | `session.test.ts` | source `refused` with the host's reason; nothing throws |
-| Story 3, change *(node)* | `change.test.ts` | one change report naming the source; one handler call |
+| Story 3, change *(node)* | `change.test.ts`; `node-host.test.ts` | one change report naming the source; one handler call |
 | Story 3, same bytes | `change.test.ts` | no report, no handler call |
 | Story 3, unreachable | `change.test.ts` | the dropped source is in `removed` and no longer watched |
 | Story 3, shared cache | `change.test.ts` | two identical files, one handler call, both heal |
@@ -43,7 +43,7 @@ Cascata.
 
 Until a browser test runner is justified (see [research.md](research.md#browser-verification)):
 
-1. `npx tsc` to build `dist/`.
+1. `npm run build` to write `dist/` (plain `tsc` only type-checks).
 2. Serve the repository root on `http://localhost` with any static server.
 3. Open `test/browser.html`, which maps `parse5` and `entities` from `node_modules` with an
    import map, imports `dist/index.js`, `dist/html.js` and `dist/memory.js`,
