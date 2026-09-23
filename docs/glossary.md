@@ -68,7 +68,9 @@ Written with a capital, Provenance is the library.
 
 **Resolver.** The part of Provenance that turns a request into a target, pluggable by scheme: relative paths, packages, `http(s)` (an external leaf), `data:` (no edge at all). Every resolver records its probes.
 
-**Session.** The unit of work: one entry document, every source reachable from it, and one runtime observing it.
+**Root.** A source a session holds because the embedder added it, or because someone other than Provenance read it through the session's host (as Cascata does), rather than because another source asked for it. A stylesheet named only in configuration is a root. The entry document is the first root.
+
+**Session.** The unit of work: one entry document, the embedder's other roots, every source reachable from them, and one runtime observing it.
 
 **Source.** A file Provenance knows, or a virtual source carved out of one. Has an identity Provenance mints and keeps stable, a path, a kind, and a version.
 
