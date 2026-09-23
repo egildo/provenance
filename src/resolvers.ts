@@ -2,7 +2,7 @@
 
 import type { Host, Resolution, Resolver } from "./index.ts";
 
-const hasScheme = (request: string) => /^[a-z][a-z0-9+.-]*:/i.test(request);
+export const hasScheme = (request: string) => /^[a-z][a-z0-9+.-]*:/i.test(request);
 const isWeb = (url: string) => /^https?:/i.test(url);
 
 /** `data:`, an empty request, and a request that is only a fragment make no edge. */

@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { openSession } from "../src/index.ts";
-import type { Host } from "../src/index.ts";
+import type { Host, Resolver } from "../src/index.ts";
 import { createMemoryHost } from "../src/memory.ts";
 import { css } from "../src/css.ts";
+import { html } from "../src/html.ts";
 import { byLocation, include, slice } from "./helpers.ts";
 
 test("an include chain: three sources, two edges, each pointing at the bytes that asked", async () => {
@@ -114,4 +115,37 @@ test("unresolved edges are listed with their probes", async () => {
   const [edge] = session.unresolved();
   assert.equal(edge.target, undefined);
   assert.deepEqual(edge.probes, ["/d/missing.md"]);
+});
+
+test("a rooted base makes relative requests root-absolute, which are the embedder's", async () => {
+  const page = '<base href="/docs/"><link rel="stylesheet" href="style.css">';
+  const files = { "/site/docs/index.html": page, "/site/docs/style.css": "" };
+
+  const alone = await openSession({ host: createMemoryHost(files), entry: "/site/docs/index.html", handlers: [html] });
+  const [edge] = alone.unresolved();
+  assert.deepEqual([edge.request, edge.probes], ["style.css", []]);
+  alone.close();
+
+  const asked: string[] = [];
+  const site: Resolver = {
+    claims: request => request.startsWith("/"),
+    async resolve(request, _base, host) {
+      asked.push(request);
+      const location = host.paths.resolve("/site", `.${request}`);
+      const target = await host.canonicalize(location);
+      return target === undefined ? { probes: [location] } : { probes: [location], target };
+    },
+  };
+  const served = await openSession({ host: createMemoryHost(files), entry: "/site/docs/index.html", handlers: [html], resolvers: [site] });
+  assert.deepEqual(asked, ["/docs/style.css"]);
+  assert.deepEqual(served.unresolved(), []);
+  assert.equal(byLocation(served, "/site/docs/style.css").state, "leaf");
+  served.close();
+});
+
+test("a protocol-relative base is the web", async () => {
+  const host = createMemoryHost({ "/a.html": '<base href="//cdn.example/lib/"><script src="x.js"></script>' });
+  const session = await openSession({ host, entry: "/a.html", handlers: [html] });
+  assert.deepEqual(session.sources().map(s => [s.location, s.state]), [["/a.html", "analysed"], ["https://cdn.example/lib/x.js", "external"]]);
+  session.close();
 });

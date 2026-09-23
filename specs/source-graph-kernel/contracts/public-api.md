@@ -32,7 +32,7 @@ interface Session {
   addRoot(location: string): Promise<void>;
   removeRoot(location: string): Promise<void>;
   onChange(listener: (change: Change) => void): () => void;
-  close(): void;
+  close(): void;                       // final: queued or running work changes nothing after it
 }
 
 type Source = {
