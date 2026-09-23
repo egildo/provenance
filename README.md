@@ -19,7 +19,7 @@ for (const source of session.sources()) console.log(source.id, source.state, sou
 session.onChange(change => console.log(change));
 ```
 
-Node 22.18 or later. `npm test` type-checks and runs the tests; `npm run build` writes `dist/`. Every export is listed in [the public API contract](specs/source-graph-kernel/contracts/public-api.md).
+Node 22 or later; running the tests from source needs 22.18, for type stripping. `npm test` type-checks and runs the tests; `npm run build` writes `dist/`. Every export is listed in [the public API contract](specs/source-graph-kernel/contracts/public-api.md).
 
 - [Vision](docs/vision.md): what it is for, who it serves, what it is not.
 - [Design principles](docs/principles.md): how it decides things, each principle with what it forbids.
