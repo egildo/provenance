@@ -51,8 +51,8 @@ the text the handler received. Converted to byte offsets on receipt (`offsets.ts
 
 ## Session
 
-- **Roots**: the entry location, locations the embedder adds, and locations read successfully
-  through the session's host view by someone else.
+- **Roots**: the entry location, locations the embedder adds, and the locations each label's
+  latest ended read pass recorded (read, noted or missing). See rule 5.
 - **Reachable**: roots plus every target of an edge from a reachable source.
 - **Watched**: the location of every non-external source, plus every probe.
 - **Cycles**: strongly connected components of the edge graph with more than one source, or a
@@ -71,5 +71,13 @@ the text the handler received. Converted to byte offsets on receipt (`offsets.ts
    Every edge that probed one of them is re-resolved. Then reachability is recomputed, new
    sources analysed, unreachable ones dropped, the watched set updated, and one change reported.
 4. **Report.** `{ added, removed, changed }`, lists of source ids; `changed` means a new version.
-   Sent after each batch, and after `addRoot` and `removeRoot`. Anything that changes nothing
-   reports nothing.
+   Sent after each batch, after `addRoot` and `removeRoot`, and after a read pass ends. Anything
+   that changes nothing reports nothing.
+5. **Read pass** ([read-passes](../read-passes/spec.md)). `pass.host.read` hands back the host's
+   bytes at once and records the location's key (its canonical location, or the location resolved
+   when nothing is there) with the SHA-256 of those bytes; a refused read and an `undefined` from
+   `canonicalize` record the key as missing; `note` records a key as read. `end()` replaces the
+   label's roots with the pass's keys, reloads any existing source whose version differs from the
+   pass's, settles once, and reports: a read whose session version differs from the manifest's is
+   in `changed`, not `added`. A pass discarded by a newer one with its label, or ended after
+   `close()`, returns its manifest and changes nothing.

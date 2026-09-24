@@ -32,10 +32,10 @@ temporary directory, in `node-host.test.ts`.
 | Story 3, unreachable | `change.test.ts` | the dropped source is in `removed` and no longer watched |
 | Story 3, shared cache | `change.test.ts` | two identical files, one handler call, both heal |
 | Story 4, rename save *(node)* | `node-host.test.ts` | write a temp file, rename over the target: one change |
-| Story 4, Cascata | `cascata.test.ts` | files read through `session.host` become roots |
+| Story 4, Cascata | `cascata.test.ts` | files read through a read pass's `host` become roots |
 | Story 4, boundary | `boundary.test.ts` | no `node:` import outside `src/node.ts`; no `parse5` import outside `src/html.ts`; no `postcss` import outside `src/css.ts` |
 
-`cascata.test.ts` drives `session.host` exactly as Cascata calls it (`canonicalize`, then `read`),
+`cascata.test.ts` drives a read pass's `host` exactly as Cascata calls it (`canonicalize`, then `read`),
 using a type assertion against Cascata's `Host` shape copied into the test. It does not install
 Cascata.
 

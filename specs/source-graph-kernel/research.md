@@ -143,7 +143,8 @@ meaning *General over particular* keeps out of the core.
 (Cascata's `PathFacility` shape), and one addition, `watch`. The session exposes a view of its
 host to other readers that also answers Cascata's `cacheRead` (always `undefined`) and
 `cacheWrite` (throws "no cache configured"), which Cascata's own contract allows for a host with
-no cache; a successful `read` through that view adds a root.
+no cache; a successful `read` through that view adds a root. *Amended 2026-09-24: that view is
+now each read pass's `host` ([read-passes](../read-passes/spec.md)), with the same cache answers.*
 
 **Rationale:** `host-fits-cascata` with nothing Cascata does not already accept. Cascata requires
 `cacheRead` and `cacheWrite` by type, so the view must carry them; answering them the way

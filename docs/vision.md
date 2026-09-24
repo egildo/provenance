@@ -17,7 +17,7 @@ Four jobs, all stated against one address space.
 - **Addresses rendered output.** Any rendered node can say which source, at which version, and which byte range produced it.
 - **Stages edits.** Changes are held against a base version, previewed in memory, and written to disk together. What gets written is exactly what the preview showed.
 
-The unit of work is a **session**: one entry document, the other roots the embedder adds, everything reachable from them, and one runtime observing it. Roots exist because not everything a render reads is asked for by a source: a stylesheet or a plugin named in configuration, and the configuration files themselves, are reached by meaning, which is the embedder's (amended 2026-09-23, from the kernel spec).
+The unit of work is a **session**: one entry document, the other roots the embedder adds or its renders read, everything reachable from them, and one runtime observing it. Roots exist because not everything a render reads is asked for by a source: a stylesheet or a plugin named in configuration, and the configuration files themselves, are reached by meaning, which is the embedder's (amended 2026-09-23, from the kernel spec). A render's reads become roots through a **read pass**, and the next render's pass replaces them, so what a render stops reading leaves (amended 2026-09-24, from [the read-passes spec](../specs/read-passes/spec.md)).
 
 ## The address space is bytes
 
@@ -38,7 +38,7 @@ This is not a preference. Cascata imported `node:path`, `node:os` and `node:cryp
 ## Who it serves
 
 - **BelType, first.** Provenance replaces its file list, its URL list, its two watchers, and eventually its editing server's write path. BelType keeps what is BelType's: the include syntax and its keyscope, rendering, stamping, the server, and the decision of when to commit.
-- **Cascata, by shape and not by import.** Cascata already reads only through a host it is given. Provenance's host satisfies Cascata's `Host` interface structurally, so every configuration file Cascata reads becomes a root of the session without Cascata importing Provenance or knowing it exists. This is the only honest way to take Cascata's dependencies. Whether `./values.yaml` in a config is a file to load or data about a file depends on the schema, so no handler reading that one file could find its edges; Cascata answers them for the whole cascade at once.
+- **Cascata, by shape and not by import.** Cascata already reads only through a host it is given. A read pass's host satisfies Cascata's `Host` interface structurally, so every configuration file Cascata reads becomes a root of the session without Cascata importing Provenance or knowing it exists. This is the only honest way to take Cascata's dependencies. Whether `./values.yaml` in a config is a file to load or data about a file depends on the schema, so no handler reading that one file could find its edges; Cascata answers them for the whole cascade at once.
 - **The CSS tools**, the companion design, which build on Provenance's addresses and its edit model.
 - **Any tool** that renders documents from files and needs to know what it read, what the runtime loaded, and how to write back.
 

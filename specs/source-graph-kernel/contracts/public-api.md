@@ -22,7 +22,7 @@ function openSession(options: {
 }): Promise<Session>;
 
 interface Session {
-  readonly host: SessionHost;          // hand this to Cascata
+  read(label?: string): ReadPass;      // default label ""; discards an open pass with the same label
   sources(): readonly Source[];
   source(id: string): Source | undefined;
   edgesFrom(id: string): readonly Edge[];
@@ -33,6 +33,17 @@ interface Session {
   removeRoot(location: string): Promise<void>;
   onChange(listener: (change: Change) => void): () => void;
   close(): void;                       // final: queued or running work changes nothing after it
+}
+
+interface ReadPass {                   // specs/read-passes/spec.md
+  readonly host: SessionHost;          // hand this to Cascata, or spread it into a composed host
+  note(location: string): void;        // a location read outside `host.read`, such as a code module
+  end(): Promise<RenderManifest>;      // replaces the label's roots and settles once
+}
+
+interface RenderManifest {
+  readonly read: readonly { readonly source: string; readonly version: string }[];
+  readonly missing: readonly string[];   // locations; a note with nothing readable there is listed here
 }
 
 type Source = {
@@ -132,9 +143,9 @@ interface Host {
   };
 }
 
-interface SessionHost {                // satisfies Cascata's Host by shape
-  read(location: string): Promise<HostReadResult>;             // a successful read adds a root
-  canonicalize(location: string): Promise<string | undefined>;
+interface SessionHost {                // satisfies Cascata's Host by shape; no member uses `this`
+  read(location: string): Promise<HostReadResult>;             // recorded by the pass
+  canonicalize(location: string): Promise<string | undefined>; // `undefined` is recorded as missing
   cacheRead(key: string): Promise<Uint8Array | undefined>;     // always undefined
   cacheWrite(key: string, bytes: Uint8Array): Promise<void>;   // throws: no cache configured
   readonly paths: PathFacility;
