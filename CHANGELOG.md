@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — 2026-09-24
+
+Published as `@egildo/provenance` on GitHub Packages.
 
 - **Breaking:** `session.host` is gone. Reads become roots through a **read pass** instead ([spec](specs/read-passes/spec.md), [#1](https://github.com/egildo/provenance/issues/1)): `session.read(label)` returns a pass whose Cascata-shaped `host` records every read, with the version of the bytes it handed out, and every location it found nothing at; `pass.note(location)` records code read outside it; `pass.end()` makes those locations the label's roots, replacing the previous pass's, settles once, and returns the render manifest. A file appearing where a render found nothing is reported as a change, and a file the next render stops reading leaves.
 
