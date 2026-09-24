@@ -213,7 +213,9 @@ host imports a platform module.
 - **`embedder-adds-roots`**: A session MUST have one entry document, and the embedder MUST be able
   to add and remove further **roots**: sources the entry never asks for, such as stylesheets and
   plugins named in configuration. Every file read through the session's host by someone other
-  than Provenance, such as Cascata, MUST become a root.
+  than Provenance, such as Cascata, MUST become a root. *Superseded 2026-09-24 in its last
+  sentence by [`read-passes/end-replaces-predecessor`](../read-passes/spec.md): reads become roots
+  through a read pass, and a pass's roots are replaced by the next pass.*
 - **`analyse-to-fixpoint`**: Opening a session MUST analyse its roots, the entry among them, and
   every source reachable from them through resolved edges, and stop when nothing new appears.
 - **`record-cycles-never-follow`**: A cycle MUST be recorded as edges and reported, and analysis
@@ -248,7 +250,9 @@ host imports a platform module.
   canonical identity or "unknown"; change events), never with verdicts about what is allowed.
 - **`host-fits-cascata`**: The session's host MUST satisfy Cascata's host contract by shape, so
   every file Cascata reads through it becomes a source of the session. *Phase:* reading and
-  canonical identity now; Cascata's cache operations when a consumer needs them.
+  canonical identity now; Cascata's cache operations when a consumer needs them. *Superseded
+  2026-09-24 by [`read-passes/pass-host-is-cascata-shaped`](../read-passes/spec.md): the session
+  has no host of its own; each read pass has one.*
 - **`ship-memory-host`**: An in-memory host MUST ship for every realm, able to create, change,
   delete and refuse files on demand.
 - **`ship-node-host`**: A Node host MUST ship as a separate entry point, reading, canonicalizing

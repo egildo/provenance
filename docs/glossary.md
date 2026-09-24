@@ -60,7 +60,9 @@ Written with a capital, Provenance is the library.
 
 **Region.** Part of a source's text that belongs to another language, reported by the source's handler as a finding. Becomes a virtual source.
 
-**Render manifest.** The session's record of which version of each source a render used. It is why a stamp can leave the version out.
+**Read pass.** One render's reads through the session: a Host-shaped view (`pass.host`) that records every location read, with the version of the bytes it handed out, and every location it tried and found nothing at. Ending the pass makes those locations the roots its label contributes, replacing the previous pass's. One live pass per label.
+
+**Render manifest.** The session's record of which version of each source a render used. It is why a stamp can leave the version out. A read pass returns one when it ends: each location read, with the version the render saw, and each location found missing.
 
 **Request.** What a source asks for, as written: `./chapter.md`, `fonts/serif.woff2`, `https://…`. Resolving a request against a base yields a target or an unresolved edge.
 
@@ -68,7 +70,7 @@ Written with a capital, Provenance is the library.
 
 **Resolver.** The part of Provenance that turns a request into a target, pluggable by scheme: relative paths, packages, `http(s)` (an external leaf), `data:` (no edge at all). Every resolver records its probes.
 
-**Root.** A source a session holds because the embedder added it, or because someone other than Provenance read it through the session's host (as Cascata does), rather than because another source asked for it. A stylesheet named only in configuration is a root. The entry document is the first root.
+**Root.** A source a session holds because the embedder added it, or because the latest read pass with some label read it, or tried to and found nothing there, rather than because another source asked for it. A stylesheet named only in configuration is a root. The entry document is the first root.
 
 **Session.** The unit of work: one entry document, the embedder's other roots, every source reachable from them, and one runtime observing it.
 

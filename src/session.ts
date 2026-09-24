@@ -9,6 +9,8 @@ import type {
   Findings,
   Handler,
   Host,
+  ReadPass,
+  RenderManifest,
   Resolver,
   Session,
   SessionHost,
@@ -72,7 +74,12 @@ export async function openSession(options: {
 
   const ids = new Map<string, string>();
   const nodes = new Map<string, Node>();
+  /** The entry and what the embedder added; no read pass touches these. */
   const roots = new Set<string>();
+  /** What each label's latest ended read pass recorded. */
+  const passRoots = new Map<string, ReadonlySet<string>>();
+  /** The open pass per label, by identity, so a newer pass can discard an older one. */
+  const livePasses = new Map<string, object>();
   const listeners = new Set<(change: Change) => void>();
   const watch = host.watch(locations => void serialize(() => absorb(locations)));
   let queue: Promise<unknown> = Promise.resolve();
@@ -158,7 +165,8 @@ export async function openSession(options: {
   async function settle(): Promise<{ added: string[]; removed: string[] }> {
     const reachable = new Set<string>();
     const added: string[] = [];
-    const worklist = [...roots].map(key => ({ key, external: false }));
+    const all = new Set([...roots, ...[...passRoots.values()].flatMap(keys => [...keys])]);
+    const worklist = [...all].map(key => ({ key, external: false }));
     for (let next = worklist.shift(); next; next = worklist.shift()) {
       if (reachable.has(next.key)) continue;
       reachable.add(next.key);
@@ -282,25 +290,96 @@ export async function openSession(options: {
     return found;
   }
 
-  const sessionHost: SessionHost = {
-    paths: host.paths,
-    canonicalize: location => host.canonicalize(location),
-    async read(location) {
-      const result = await host.read(location);
-      if (result.ok) {
-        const key = await keyFor(location);
-        if (!roots.has(key)) await session.addRoot(key);
+  /** Ends a pass that is still its label's live one: its keys become the label's roots (data-model.md, rule 5). */
+  async function endPass(label: string, keys: ReadonlySet<string>, reads: ReadonlyMap<string, string>): Promise<void> {
+    passRoots.set(label, keys);
+    const changed: string[] = [];
+    for (const [key, version] of reads) {
+      const node = nodes.get(key);
+      if (!node || versionOf(node) === version) continue;
+      const fresh = await load(key, false);
+      if (versionOf(fresh) !== versionOf(node)) {
+        nodes.set(key, fresh);
+        changed.push(key);
       }
-      return result;
-    },
-    cacheRead: async () => undefined,
-    cacheWrite: async () => {
-      throw new Error("no cache configured");
-    },
-  };
+    }
+    const { added, removed } = await settle();
+    // The render used other bytes than the session now holds: a change, not a new source.
+    const mismatched = [...reads].filter(([key, version]) => nodes.has(key) && versionOf(nodes.get(key)) !== version).map(([key]) => key);
+    emit({
+      added: added.filter(key => !mismatched.includes(key)).map(idFor),
+      removed: removed.map(idFor),
+      changed: [...new Set([...changed, ...mismatched])].filter(key => nodes.has(key)).map(idFor),
+    });
+  }
+
+  function read(label = ""): ReadPass {
+    const token = {};
+    livePasses.set(label, token);
+    const reads = new Map<string, string>();
+    const notes = new Set<string>();
+    const missing = new Set<string>();
+    const recording: Promise<void>[] = [];
+    let manifest: Promise<RenderManifest> | undefined;
+    const recordMissing = (location: string) => void recording.push(keyFor(location).then(key => void missing.add(key)));
+
+    const passHost: SessionHost = {
+      paths: host.paths,
+      async canonicalize(location) {
+        const found = await host.canonicalize(location);
+        if (found === undefined && manifest === undefined) missing.add(host.paths.resolve(location));
+        return found;
+      },
+      // Hands back the host's answer at once; hashing and canonicalizing are recorded on the side.
+      async read(location) {
+        const result = await host.read(location);
+        if (manifest !== undefined) return result;
+        if (!result.ok) recordMissing(location);
+        else {
+          const bytes = result.bytes;
+          recording.push(Promise.all([keyFor(location), sha256(bytes)]).then(([key, version]) => void reads.set(key, version)));
+        }
+        return result;
+      },
+      cacheRead: async () => undefined,
+      cacheWrite: async () => {
+        throw new Error("no cache configured");
+      },
+    };
+
+    async function finish(): Promise<RenderManifest> {
+      await Promise.all(recording);
+      for (const key of [...reads.keys(), ...notes]) missing.delete(key);
+      const keys = new Set([...reads.keys(), ...notes, ...missing]);
+      if (livePasses.get(label) === token) {
+        livePasses.delete(label);
+        await serialize(() => endPass(label, keys, reads));
+      }
+      const noted = [...notes].filter(key => !reads.has(key)).map(key => ({ key, node: nodes.get(key) }));
+      const versioned = (node: Node | undefined) => (node && "version" in node ? node.version : undefined);
+      return {
+        read: [
+          ...[...reads].map(([key, version]) => ({ source: idFor(key), version })),
+          ...noted.flatMap(({ key, node }) => {
+            const version = versioned(node);
+            return version === undefined ? [] : [{ source: idFor(key), version }];
+          }),
+        ],
+        missing: [...missing, ...noted.filter(({ node }) => versioned(node) === undefined).map(({ key }) => key)],
+      };
+    }
+
+    return {
+      host: passHost,
+      note(location) {
+        if (manifest === undefined) recording.push(keyFor(location).then(key => void notes.add(key)));
+      },
+      end: () => (manifest ??= finish()),
+    };
+  }
 
   const session: Session = {
-    host: sessionHost,
+    read,
     sources: () => [...nodes.values()].map(view),
     source: id => {
       const node = nodeById(id);

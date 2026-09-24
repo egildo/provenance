@@ -4,8 +4,8 @@
 export { openSession } from "./session.ts";
 
 export interface Session {
-  /** A view of the host for other readers, such as Cascata. A successful read adds a root. */
-  readonly host: SessionHost;
+  /** Starts a read pass (specs/read-passes/spec.md). Discards an open pass with the same label. */
+  read(label?: string): ReadPass;
   sources(): readonly Source[];
   source(id: string): Source | undefined;
   edgesFrom(id: string): readonly Edge[];
@@ -16,6 +16,23 @@ export interface Session {
   removeRoot(location: string): Promise<void>;
   onChange(listener: (change: Change) => void): () => void;
   close(): void;
+}
+
+/** One render's reads through the session. */
+export interface ReadPass {
+  /** Cascata's `Host` shape. No member uses `this`, so it may be spread into a composed host. */
+  readonly host: SessionHost;
+  /** Records a location read outside `host.read`, such as a code module. */
+  note(location: string): void;
+  /** Makes the pass's locations its label's roots, replacing the previous pass's, and settles once. */
+  end(): Promise<RenderManifest>;
+}
+
+/** Which version of each source a render used, and where it found nothing. */
+export interface RenderManifest {
+  readonly read: readonly { readonly source: string; readonly version: string }[];
+  /** Locations. A note with nothing readable there is listed here. */
+  readonly missing: readonly string[];
 }
 
 export type Source = {
@@ -103,7 +120,7 @@ export interface Host {
   };
 }
 
-/** Satisfies Cascata's `Host` by shape. */
+/** A read pass's view of the host. Satisfies Cascata's `Host` by shape. */
 export interface SessionHost {
   read(location: string): Promise<HostReadResult>;
   canonicalize(location: string): Promise<string | undefined>;
