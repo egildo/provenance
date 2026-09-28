@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1 — 2026-09-28
+
+- README rewritten as a proper repo front page, with the design principles tabled and an honest status section. MIT `LICENSE` file added to back `package.json`'s declared license. No code changes.
+
 ## 0.2.0 — 2026-09-24
 
 Published as `@egildo/provenance` on GitHub Packages.

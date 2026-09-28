@@ -1,6 +1,6 @@
 {
   "name": "@egildo/provenance",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Knows, for one rendered document, every source involved, how the sources depend on each other, and where each came from.",
   "type": "module",
   "license": "MIT",
