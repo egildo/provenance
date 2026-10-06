@@ -162,3 +162,10 @@ own work only, not a listener's.
 **Still silent in the documents:** the kernel rule does not say what a listener's throw does to the
 other listeners; it does not say which listener's error escapes when several throw (mine: the
 first); and it says nothing about a listener that throws while the session is closing.
+
+**Step 5, addendum: the probes restore was unguarded.** Sabotaging `l.probes = probes` out of the
+restore left all 89 tests green: the aliasing resolver returned the same probe every time, so a
+mutated `probes` looked identical. The resolver now probes a location named for its answer
+(`/switch-/b.md`, then `/switch-/c.md`), so the failed batch changes the probes, and the test also
+writes to the old probe afterwards and expects the restored link to re-resolve; without the
+restore the edge's `probes` differ at the first `deepEqual`, and the later re-resolve would not happen either.

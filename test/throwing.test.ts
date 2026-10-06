@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { openSession } from "../src/index.ts";
 import type { Handler, Host, Resolver } from "../src/index.ts";
 import { createMemoryHost } from "../src/memory.ts";
-import { include, tick } from "./helpers.ts";
+import { absorbed, include, tick } from "./helpers.ts";
 
 /** A test-only handler that throws on any text containing BOOM. */
 const throwing: Handler = {
@@ -135,10 +135,10 @@ test("a failed batch leaves every link as it was, including ones re-resolved bef
       return memory.canonicalize(location);
     },
   };
-  // An embedder's resolver whose answer depends on the world: it probes /switch, and goes where `pick` says.
+  // An embedder's resolver whose answer depends on the world: it probes a location named for the answer, and goes where `pick` says.
   const alias: Resolver = {
     claims: request => request.startsWith("alias:"),
-    resolve: async () => ({ probes: ["/switch"], target: pick }),
+    resolve: async () => ({ probes: [`/switch-${pick}`], target: pick }),
   };
   const session = await openSession({ host, entry: "/a.md", handlers: [throwing], resolvers: [alias] });
   await session.addRoot("/c.md");
@@ -150,7 +150,7 @@ test("a failed batch leaves every link as it was, including ones re-resolved bef
   pick = "/c.md";
   const seen = await unhandled(async () => {
     // One batch. The alias link is re-resolved to c first; y's resolution then throws.
-    memory.write("/switch", "go\n");
+    memory.write("/switch-/b.md", "go\n");
     memory.write("/y.md", "y\n");
     await tick();
   });
@@ -158,6 +158,10 @@ test("a failed batch leaves every link as it was, including ones re-resolved bef
   assert.match(String(seen[0]), /host broke/);
   assert.deepEqual(session.edgesFrom(a), before.edges);
   assert.deepEqual(session.unresolved(), before.unresolved);
+  // The restored link still probes its old location, so a change there re-resolves it (to c, as `pick` now says).
+  memory.write("/switch-/b.md", "again\n");
+  await absorbed(session, "/a.md");
+  assert.equal(session.edgesFrom(a)[0]?.target, session.sources().find(s => s.location === "/c.md")?.id);
 });
 
 test("a listener's throw rejects the call but undoes nothing", async () => {
