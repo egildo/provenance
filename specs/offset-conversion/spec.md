@@ -45,8 +45,9 @@ the two can be read together.
   call re-analyses it and rejects (step 1's report, finding 3).
 - **FR-005** *(kernel, decided by the owner 2026-10-06)* A throw during work no call started —
   analysis set off by the host's change report — is not swallowed: it escapes as an unhandled
-  rejection, which by default stops a Node process. Today `serialize` marks it handled and the
-  session goes on showing the source at its old version as `analysed` (finding 4). The queue must
+  rejection, which by default stops a Node process. Today `serialize` marks it handled, so the
+  session silently stays at the old version with nothing said (finding 4); staying there is right,
+  the silence is the defect. The queue must
   still survive for the work after it: escaping must not wedge serialization. No `onError` listener;
   that is a later addition when a long-running consumer needs one.
 - **FR-006** The same two rules hold for a throw from the host (`read`, `canonicalize`) on the same

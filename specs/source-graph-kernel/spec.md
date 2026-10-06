@@ -229,8 +229,9 @@ host imports a platform module.
   started MUST reject that call and MUST leave the session as it was before the call — a root the
   call added, or the roots a read pass's `end()` installed, are rolled back. A throw during work no
   call started — analysis the host's change report set off — MUST NOT be swallowed: it escapes as
-  an unhandled rejection. A session MUST NOT go on showing a source as analysed at a version whose
-  analysis threw.
+  an unhandled rejection; the session stays at the last state whose work succeeded, and the
+  escaping error is what says so. Rollback covers the session's own work only: a change listener
+  runs after that work is kept, and its throw rejects the call (or escapes) without undoing it.
 
 **Caching and change**
 
