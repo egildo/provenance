@@ -81,18 +81,38 @@ export async function openSession(options: {
   /** The open pass per label, by identity, so a newer pass can discard an older one. */
   const livePasses = new Map<string, object>();
   const listeners = new Set<(change: Change) => void>();
-  const watch = host.watch(locations => void serialize(() => absorb(locations)));
+  // No call started this work, so a throw has nowhere to go but out: re-rejecting makes it unhandled.
+  const watch = host.watch(locations => void serialize(() => absorb(locations)).catch(error => Promise.reject(error)));
   let queue: Promise<unknown> = Promise.resolve();
   let closed = false;
 
   /**
    * Runs session work one piece at a time, so a change batch never interleaves with another.
-   * Work still queued at `close()` never runs.
+   * Work still queued at `close()` never runs. Work that throws leaves the session as it was, and
+   * rejects the returned promise; the queue goes on.
    */
   function serialize(work: () => Promise<void>): Promise<void> {
-    const next = queue.then(() => (closed ? undefined : work()));
+    const next = queue.then(async () => {
+      if (closed) return;
+      const before = { ids: new Map(ids), nodes: new Map(nodes), roots: new Set(roots), passRoots: new Map(passRoots) };
+      try {
+        await work();
+      } catch (error) {
+        restore(ids, before.ids);
+        restore(nodes, before.nodes);
+        restore(passRoots, before.passRoots);
+        roots.clear();
+        for (const key of before.roots) roots.add(key);
+        throw error;
+      }
+    });
     queue = next.catch(() => undefined);
     return next;
+  }
+
+  function restore<K, V>(live: Map<K, V>, saved: ReadonlyMap<K, V>) {
+    live.clear();
+    for (const [key, value] of saved) live.set(key, value);
   }
 
   const idFor = (key: string) => {
