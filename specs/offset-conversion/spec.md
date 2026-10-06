@@ -35,13 +35,22 @@ the two can be read together.
   a `RangeError` naming the index and the reason. It is thrown, not reported as state, under the
   kernel rule `broken-is-reported-not-thrown`: "a handler that throws [is a] programmer error and
   MUST throw".
-- **FR-003** The error reaches the embedder the way a throwing handler's does, from the session
-  operation whose analysis met it. **There is no test today that a throwing handler throws**
-  (`grep -n throw test/` finds none); write one first, observe what actually happens — the call
-  rejects, or the session's work queue swallows it, or later work wedges — and report it before
-  deciding FR-002's error follows the same path. If a throwing handler today does anything but
-  reject the call that triggered it, stop and report: that is a defect in the kernel, not in this
-  milestone.
+- **FR-003** The error reaches the embedder by the kernel's rule for any throw
+  (`broken-is-reported-not-thrown`, amended 2026-10-06 for this milestone): from the call whose work
+  met it, or, when no call started the work, as an unhandled rejection.
+- **FR-004** *(kernel, decided by the owner 2026-10-06 after step 1 found the defect)* A throw
+  during work an embedder's call started rejects that call and leaves the session as it was before
+  the call. A root `addRoot` added is removed again; a read pass whose `end()` throws leaves its
+  label's previous roots in place. Later calls run normally. Today the root stays and every later
+  call re-analyses it and rejects (step 1's report, finding 3).
+- **FR-005** *(kernel, decided by the owner 2026-10-06)* A throw during work no call started —
+  analysis set off by the host's change report — is not swallowed: it escapes as an unhandled
+  rejection, which by default stops a Node process. Today `serialize` marks it handled and the
+  session goes on showing the source at its old version as `analysed` (finding 4). The queue must
+  still survive for the work after it: escaping must not wedge serialization. No `onError` listener;
+  that is a later addition when a long-running consumer needs one.
+- **FR-006** The same two rules hold for a throw from the host (`read`, `canonicalize`) on the same
+  paths, since they share `serialize`; test one of them.
 
 ## Conformance
 
@@ -61,12 +70,21 @@ Expected values are derived by hand or from `TextEncoder` on each prefix — nev
 | `""` | `0` | `0` |
 
 The existing test "agrees with TextEncoder at every index" stays and gains the lone-surrogate
-texts. Through the session: a test-only handler returning a request whose `end` exceeds the text's
-length makes the triggering call throw (FR-003), and the session's later work still runs.
+texts. Through the session, with test-only handlers:
+- a request whose `end` exceeds the text's length makes the triggering `addRoot` reject with the
+  `RangeError` (FR-002, FR-003);
+- after a rejected `addRoot`, `sources()` and the roots are as before the call, and a following
+  `addRoot` of a healthy file resolves (FR-004); the same through a read pass's `end()`;
+- a handler that throws on a change the host reports produces an unhandled rejection (observe it
+  with a `process.on("unhandledRejection")` listener installed and removed by the test), and a
+  later `addRoot` still resolves (FR-005);
+- one host verb throwing behaves the same (FR-006).
 
 **Sabotage**, each watched red and restored: drop the low-surrogate check (the first four rows go
 red); drop the pair-interior check (the `x😀y` interior row goes red, and nothing else); allow
-`text.length + 1` (the `"ab"` rows go red); allow non-integers (`1.5` goes red). Back up first;
+`text.length + 1` (the `"ab"` rows go red); allow non-integers (`1.5` goes red); skip the rollback (the FR-004 tests go red); restore the `catch` that swallows
+(the FR-005 test goes red); make the escaping throw also break the queue (FR-005's later `addRoot`
+goes red). Back up first;
 mark it `SABOTAGE`; grep for it before committing.
 
 ## Parked: the findings cache (issue #3's third point)
@@ -84,11 +102,11 @@ BelType, the one consumer, loads no handlers today, so the cache serves nobody y
 
 One plan file is enough. Commits, tree green at each (`npm test` runs `tsc` first):
 
-1. **The throwing-handler test** (FR-003's first half) and what it showed.
-2. **The conversion** — FR-001, FR-002, FR-003; the table above, tests first, red against the
-   current code.
-3. **Report** — `specs/offset-conversion/report.md`, with every place this spec or the kernel
+1. **The throwing-handler test** and what it showed — done (a9c98fb, report).
+2. **The kernel** — FR-004, FR-005, FR-006; tests first, red against the current code.
+3. **The conversion** — FR-001, FR-002, FR-003; the table above, tests first.
+4. **Report** — `specs/offset-conversion/report.md`, with every place this spec or the kernel
    specification was silent or wrong.
 
-Do not bump the version; the release is decided after verification. Do not edit `docs/` or the
-kernel specification; report what should change there.
+Do not bump the version; the release is decided after verification. The kernel specification is
+already amended for FR-004 and FR-005; do not edit it or `docs/` — report what should change there.
