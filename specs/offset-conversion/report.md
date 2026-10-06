@@ -1,70 +1,121 @@
-# Report: offset conversion — stopped at FR-003
+# Report: offset conversion
 
-**Status: stopped after step 1. `byteOffsets` is unchanged.** FR-003 says to stop and report if a
-throwing handler does anything other than reject the call that triggered it. It does, in two ways.
-
-## What a throwing handler does (observed, HEAD 864e205 plus the new test)
-
-Test handler: claims `.md`, throws `Error("handler broke")` when the text contains `BOOM`.
-
-1. `openSession` with a throwing entry rejects. Fine.
-2. `addRoot("/bad.md")` rejects with the handler's error. Fine. This is the committed test
-   (a9c98fb, `test/session.test.ts`).
-3. **The session is wedged afterwards.** `addRoot` adds the key to `roots` before it settles, and
-   the throw leaves it there. `session.sources()` still shows the pre-call sources, but every later
-   `addRoot`, `removeRoot` and read-pass `end()` re-analyses `/bad.md`, throws again and rejects.
-   `removeRoot("/bad.md")` is the one call that clears it, and the embedder has no reason to
-   guess that. The same happens through a read pass: `end()` rejects, `passRoots` keeps the key, and
-   every later call rejects until a newer pass with the same label replaces the roots.
-4. **A throw during change-triggered analysis is swallowed.** The host watcher calls
-   `void serialize(() => absorb(locations))`. No call is waiting on it. `serialize` does
-   `queue = next.catch(() => undefined)`, which marks `next` as handled, so no `unhandledRejection`
-   fires (checked with a listener). Writing `BOOM` into an already-loaded `/b.md` leaves the session
-   showing `/b.md` as `analysed` at its old version, emits no change and raises no error. The
-   session is silently stale. Later work does run, since the queue itself survives.
-
-## Why I stopped
-
-(3) and (4) are kernel defects (`src/session.ts`), not this milestone's. They also bear on FR-002:
-the conversion error would reach the embedder through (2) when an `addRoot` or read pass triggers
-it, but through (4), swallowed, when a file change does. The error FR-002 asks for would be lost in
-the case most likely to meet it.
-
-I did not fix them, did not write FR-001/FR-002, and did not touch the cache.
-
-## Spec and kernel-spec findings
-
-- **The conformance line "the session's later work still runs" is false today for `addRoot`**
-  (finding 3). It is true after a change-triggered throw, but only because the throw is swallowed.
-  The spec has to say which it means.
-- **FR-003 assumes a throwing handler "rejects the call that triggered it".** That only holds when a
-  call triggered it. The kernel spec's `broken-is-reported-not-thrown` ("a handler that throws [is
-  a] programmer error and MUST throw") does not say where it throws to when nothing is calling.
-  The kernel spec is silent on the watcher path, and the code's answer is "nowhere".
-- **The kernel spec is silent on session state after a throw.** Whether the root added by the
-  failed `addRoot` stays is unspecified.
-- **No test ever covered a throwing handler** (confirmed: `grep -n throw test/`). I committed only
-  the passing half. I did not write tests pinning (3) or (4), since they are defects and a test
-  pinning them would enshrine them.
-- Not checked: the dependency on `broken-is-reported-not-thrown` for host `read`/`canonicalize`
-  throwing, which share the same `serialize` path.
-
-## Decisions needed from the owner
-
-1. Where does a throw from change-triggered analysis go? Options: an `onError` listener, a
-   rejected `close()`, or marking the node. Any needs a kernel-spec amendment or reading.
-2. Should a failed `addRoot` / read pass roll its root back?
-3. Then FR-002/FR-003 can be re-scoped, and the "later work still runs" row rewritten.
-
-## Details I invented
-
-- The test handler and its `BOOM` marker (the spec asked for a handler whose request `end` exceeds
-  the text; I used a direct throw to observe the kernel path, not the conversion path).
-- The test covers `openSession` and `addRoot` only, not read passes.
+Status: done through step 4. Tests 73 before the milestone, 85 after, all green; `grep -rn SABOTAGE
+src test` is empty; version not bumped; `docs/` and the kernel spec not edited.
 
 ## Commits
 
-- a9c98fb `test: a handler that throws makes the triggering session call reject`
+- a9c98fb `test: a handler that throws makes the triggering session call reject` (step 1)
+- ca4de0d the first version of this report, written when step 1 stopped
+- 61628c2 `fix(session): a failed call changes nothing, an uncalled throw escapes` (step 2, FR-004-006)
+- 3ecb89a `fix(offsets): a lone surrogate counts three bytes; an index it cannot convert throws a RangeError` (step 3)
 - this report
 
-Tests: 73 before, 74 after.
+## Step 1: what a throwing handler did before the kernel change
+
+1. `openSession` and `addRoot` rejected with the handler's error.
+2. A failed `addRoot` wedged the session: the root stayed, and every later `addRoot`, `removeRoot`
+   and read-pass `end()` re-analysed it and rejected. Read passes did the same through
+   `passRoots`. Only `removeRoot` of the bad key cleared it.
+3. A throw during change-triggered analysis vanished: `queue = next.catch(...)` marked the promise
+   handled, so no `unhandledRejection` fired (checked with a listener), no change was emitted, and
+   the source stayed at its old version as `analysed`.
+
+## Step 2: the kernel (`src/session.ts`)
+
+- `serialize` snapshots `ids`, `nodes`, `roots` and `passRoots` before each piece of work and
+  restores them if it throws, then rejects as before. This covers `addRoot`, `removeRoot`, a read
+  pass's `end()` and the watcher's `absorb` alike. The queue still survives (`queue = next.catch`).
+- The watcher's `serialize(...)` gets `.catch(error => Promise.reject(error))`, which re-raises as
+  an unhandled rejection. One line. No `onError`.
+- Tests: `test/throwing.test.ts`, five: rollback on `addRoot` (with a healthy source loaded before
+  the throwing one, so a missing rollback shows in `sources()`), rollback of a read pass's label,
+  a host `read` throwing on `addRoot` (FR-006), the handler throwing on a change (FR-005), the host
+  throwing on a change. Each was red against the old code for the reason it names (the extra
+  source in `sources()`; zero unhandled rejections seen).
+- **Unhandled-rejection test under `node --test`:** the runner has its own `unhandledRejection`
+  listener, which would fail the test. The helper `unhandled()` in `throwing.test.ts` saves
+  `process.listeners("unhandledRejection")`, calls `removeAllListeners`, installs its own, runs the
+  action, waits 20 ms, and restores the saved listeners in a `finally`. It worked first time.
+
+Sabotage (backed up to `/tmp`, marked `SABOTAGE`, restored):
+
+| Sabotage | Red |
+|---|---|
+| skip the restore | the three rollback tests (`addRoot`, read pass, host verb); the two watcher tests stay green |
+| drop the re-reject | the two watcher tests |
+| let the escaping throw break the queue (`queue = next`) | the two watcher tests **and** the three rollback tests, five in all |
+
+The third is wider than the spec's "FR-005's later `addRoot` goes red": without the queue's
+`catch`, any rejected call poisons the queue, so every FR-004 test's "next call runs" assertion
+fails too. That is correct, but the spec's description undersold it.
+
+## Step 3: the conversion (`src/offsets.ts`)
+
+- The low-surrogate check is `isLow(text.charCodeAt(i + 1))`; a lone high counts 3.
+- Not-an-integer, negative and past-the-end are checked up front for every index. Pair interior is
+  detected inside the pass: after counting, `i > target` means the pair's second half was consumed
+  to reach the target.
+- Tests in `test/offsets.test.ts`: the table rows, the TextEncoder agreement test over seven
+  lone-surrogate texts (expected values from `TextEncoder` on each prefix, indices built without
+  `byteOffsets`), the throwing cases, and one session test (request `end` past the text rejects
+  `addRoot` with a `RangeError` and leaves `sources()` unchanged). Red against the old code: five
+  tests failed for the right reasons before the change.
+
+| Sabotage | Red |
+|---|---|
+| drop the low-surrogate check | the first-four-rows test and the TextEncoder agreement test |
+| drop the pair-interior check | only the throwing-cases test (its `x😀y` row), as the spec predicted |
+| allow `text.length + 1` | the throwing-cases test and the session test |
+| allow non-integers (only `NaN` still refused) | the throwing-cases test (`1.5`, `Infinity`) |
+
+## Silent, contradictory or wrong — and what I invented
+
+1. **The new kernel rule contradicts itself, or at least pairs two clauses that cannot both be
+   satisfied as I read them.** `broken-is-reported-not-thrown` (as amended) says a session MUST NOT
+   go on showing a source as analysed at a version whose analysis threw. FR-005 calls the old
+   behaviour ("the session goes on showing the source at its old version as `analysed`") the
+   defect. But the old version's analysis did not throw, and the data model has no state for
+   "analysis failed". With the throw escaping and the batch rolled back, my implementation **still
+   shows the source at its old version as `analysed`**, which is literally what finding 4 called
+   wrong, though the rule's own wording is satisfied. I chose that because the alternatives
+   (dropping the node, or inventing a state) are a kernel decision and dropping it would make every
+   later call re-analyse it and reject, breaking "later calls run normally". If the intent was a
+   visible failure state, the spec has to name one. The test asserts `sources()` unchanged and
+   cannot distinguish the two readings.
+2. **Rollback is not total.** I restore `ids`, `nodes`, `roots`, `passRoots`. Not restored: `Link`
+   objects mutated in place by `link()` inside `absorb` (a host verb throwing there leaves some
+   edges re-resolved against a node map restored to before); `livePasses`; the read pass's
+   memoised `manifest` promise, so a second `end()` on a failed pass returns the same rejection. A
+   listener that throws inside `emit` after a completed `settle` rolls back state the host watch
+   was already told about (the watch set is not restored). The spec says "as it was before the
+   call" without saying how far that goes.
+3. **`absorb` is atomic, which the spec never said.** One throwing file in a batch discards the
+   other files' updates in the same batch (they stay stale until the next event touches them; their
+   versions are compared against the old ones, so they are re-detected). The alternative, keeping
+   the good ones, would have left `settle` unrun and the watch set stale.
+4. **FR-006 "test one"**: I tested a host `read` on both paths. `canonicalize` is untested.
+5. **FR-003 for read passes:** "the call whose work met it" is `end()`, not `read()`. Stated nowhere.
+   `end()` on a pass also rejects when its `read` was superseded? Not examined.
+6. **The error messages are mine**: "index N is not an integer / is negative / is past the end of
+   the text (length L) / is inside a surrogate pair". The spec says only "naming the index and the
+   reason". `Infinity` is treated as not an integer; the spec lists neither.
+7. **Spec table row 4 is written `"\ud800𐀀"`**; the character U+10000 is `𐀀`, so the row
+   is the text `\ud800𐀀` (indices 0, 1, 3 mean: start, between the lone and the pair,
+   end). It reads fine once you spell it out, but the glyph hides it.
+8. **The spec's description of sabotage 3 for the kernel** (above) undersold what goes red.
+9. **The "no `onError`" decision has a consequence the spec should say aloud:** on a Node host the
+   first bad change report stops the process by default. For a long-running embedder (BelType's
+   dev server) that is a decision, not a detail.
+
+## What should change in docs I did not edit
+
+- `specs/source-graph-kernel/contracts/public-api.md:77` says of `analyze` "throwing is a bug and
+  propagates". It should add where it propagates to (the call, or an unhandled rejection) and that
+  the session is left unchanged.
+- The kernel's `data-model.md` rules 3-5 (absorb, `addRoot`, read-pass end) should state atomicity;
+  I did not read it in full.
+- `docs/principles.md:106` ("Programmer errors throw") is still true; nothing contradicts it.
+- The version is not bumped. This is a behaviour change to a public contract (a failed call now
+  rolls back; a change-triggered throw now escapes), which an embedder can observe, so it is more
+  than a patch.
