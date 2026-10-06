@@ -231,7 +231,8 @@ host imports a platform module.
   call started — analysis the host's change report set off — MUST NOT be swallowed: it escapes as
   an unhandled rejection; the session stays at the last state whose work succeeded, and the
   escaping error is what says so. Rollback covers the session's own work only: a change listener
-  runs after that work is kept, and its throw rejects the call (or escapes) without undoing it.
+  runs after that work is kept, and its throw rejects the call (or escapes) without undoing it;
+  every other listener is still told, and the first throw is the one raised.
 
 **Caching and change**
 

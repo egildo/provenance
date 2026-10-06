@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0 — 2026-10-06
+
+A minor release because two observable behaviours change ([spec](specs/offset-conversion/spec.md), [#3](https://github.com/egildo/provenance/issues/3)).
+
+- **A failed call changes nothing.** When a handler or the host throws during work an embedder's call started (`openSession`, `addRoot`, `removeRoot`, a read pass's `end()`), the call rejects and the session is left exactly as it was before it: roots, sources and links. Before, a root that failed stayed, and every later call re-analysed it and failed again.
+- **A throw nobody called for escapes.** When a handler or the host throws during work a change report set off, the error is no longer swallowed: it escapes as an unhandled rejection, which by default stops a Node process. The session stays at its last good state. Before, it went on silently showing the old version.
+- **Listeners run after the work is kept.** A change listener that throws no longer undoes the session's work; every other listener is still told, and the first throw is the one raised.
+- `byteOffsets` counts a lone high surrogate as the three bytes `TextEncoder` writes for it, and throws a `RangeError` for an index it cannot convert: not an integer, negative, past the end, or inside a surrogate pair. Neither is reachable through the shipped handlers.
+- Not in this release: evicting old versions from the findings cache. It conflicts with the kernel rule that the same bytes are analysed at most once, and is parked.
+
 ## 0.2.1 — 2026-09-28
 
 - README rewritten as a proper repo front page, with the design principles tabled and an honest status section. MIT `LICENSE` file added to back `package.json`'s declared license. No code changes.

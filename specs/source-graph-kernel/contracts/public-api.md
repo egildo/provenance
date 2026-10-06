@@ -74,7 +74,8 @@ interface Change { readonly added: readonly string[]; readonly removed: readonly
 ```ts
 interface Handler {
   claims(location: string): boolean;
-  analyze(text: string): Findings;     // pure; throwing is a bug and propagates
+  analyze(text: string): Findings;     // pure; throwing is a bug: it rejects the call whose work met it,
+                                       // which leaves the session unchanged, or escapes when no call did
 }
 
 interface Findings {
