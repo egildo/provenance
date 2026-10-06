@@ -89,15 +89,28 @@ export async function openSession(options: {
   /**
    * Runs session work one piece at a time, so a change batch never interleaves with another.
    * Work still queued at `close()` never runs. Work that throws leaves the session as it was, and
-   * rejects the returned promise; the queue goes on.
+   * rejects the returned promise; the queue goes on. The change the work returns is announced only
+   * after the work is kept, so a listener's throw rejects the call and undoes nothing.
    */
-  function serialize(work: () => Promise<void>): Promise<void> {
+  function serialize(work: () => Promise<Change | void>): Promise<void> {
     const next = queue.then(async () => {
       if (closed) return;
-      const before = { ids: new Map(ids), nodes: new Map(nodes), roots: new Set(roots), passRoots: new Map(passRoots) };
+      const before = {
+        ids: new Map(ids),
+        nodes: new Map(nodes),
+        roots: new Set(roots),
+        passRoots: new Map(passRoots),
+        // Links are mutated in place when the world changes under them.
+        links: [...nodes.values()].flatMap(node => node.links.map(l => ({ link: l, target: l.target, probes: l.probes }))),
+      };
+      let change: Change | void;
       try {
-        await work();
+        change = await work();
       } catch (error) {
+        for (const { link: l, target, probes } of before.links) {
+          l.target = target;
+          l.probes = probes;
+        }
         restore(ids, before.ids);
         restore(nodes, before.nodes);
         restore(passRoots, before.passRoots);
@@ -105,6 +118,7 @@ export async function openSession(options: {
         for (const key of before.roots) roots.add(key);
         throw error;
       }
+      if (change) emit(change);
     });
     queue = next.catch(() => undefined);
     return next;
@@ -211,26 +225,35 @@ export async function openSession(options: {
     return { added, removed };
   }
 
+  /** Tells every listener, each even if another throws; the first throw is then rethrown. */
   function emit(change: Change) {
     if (change.added.length + change.removed.length + change.changed.length === 0) return;
-    for (const listener of listeners) listener(change);
+    const thrown: unknown[] = [];
+    for (const listener of listeners) {
+      try {
+        listener(change);
+      } catch (error) {
+        thrown.push(error);
+      }
+    }
+    if (thrown.length > 0) throw thrown[0];
   }
 
-  /** Settles and reports, for anything that changes the roots or the world. */
-  async function report(changedKeys: readonly string[]): Promise<void> {
+  /** Settles, for anything that changes the roots or the world; returns the change to announce. */
+  async function report(changedKeys: readonly string[]): Promise<Change> {
     const { added, removed } = await settle();
-    emit({
+    return {
       added: added.map(idFor),
       removed: removed.map(idFor),
       changed: changedKeys.filter(key => nodes.has(key)).map(idFor),
-    });
+    };
   }
 
   const versionOf = (node: Node | undefined) =>
     node === undefined ? undefined : node.state === "refused" ? `refused:${node.reason}` : "version" in node ? node.version : "external";
 
   /** Absorbs one batch of host events (data-model.md, rules 3 and 4). */
-  async function absorb(locations: readonly string[]): Promise<void> {
+  async function absorb(locations: readonly string[]): Promise<Change> {
     const touched = new Set(locations);
     const changed: string[] = [];
     for (const node of [...nodes.values()]) {
@@ -245,7 +268,7 @@ export async function openSession(options: {
     for (const node of nodes.values()) {
       for (const l of node.links) if (l.probes.some(p => touched.has(p))) await link(l);
     }
-    await report(changed);
+    return report(changed);
   }
 
   const edge = (node: Node, l: Link): Edge => {
@@ -311,7 +334,7 @@ export async function openSession(options: {
   }
 
   /** Ends a pass that is still its label's live one: its keys become the label's roots (data-model.md, rule 5). */
-  async function endPass(label: string, keys: ReadonlySet<string>, reads: ReadonlyMap<string, string>): Promise<void> {
+  async function endPass(label: string, keys: ReadonlySet<string>, reads: ReadonlyMap<string, string>): Promise<Change> {
     passRoots.set(label, keys);
     const changed: string[] = [];
     for (const [key, version] of reads) {
@@ -326,11 +349,11 @@ export async function openSession(options: {
     const { added, removed } = await settle();
     // The render used other bytes than the session now holds: a change, not a new source.
     const mismatched = [...reads].filter(([key, version]) => nodes.has(key) && versionOf(nodes.get(key)) !== version).map(([key]) => key);
-    emit({
+    return {
       added: added.filter(key => !mismatched.includes(key)).map(idFor),
       removed: removed.map(idFor),
       changed: [...new Set([...changed, ...mismatched])].filter(key => nodes.has(key)).map(idFor),
-    });
+    };
   }
 
   function read(label = ""): ReadPass {
@@ -412,12 +435,12 @@ export async function openSession(options: {
     addRoot: location =>
       serialize(async () => {
         roots.add(await keyFor(location));
-        await report([]);
+        return report([]);
       }),
     removeRoot: location =>
       serialize(async () => {
         roots.delete(await keyFor(location));
-        await report([]);
+        return report([]);
       }),
     onChange(listener) {
       listeners.add(listener);
