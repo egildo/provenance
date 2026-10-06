@@ -149,3 +149,17 @@ test("a protocol-relative base is the web", async () => {
   assert.deepEqual(session.sources().map(s => [s.location, s.state]), [["/a.html", "analysed"], ["https://cdn.example/lib/x.js", "external"]]);
   session.close();
 });
+
+test("a handler that throws makes the call that triggered its analysis reject", async () => {
+  const throwing = {
+    claims: (location: string) => location.endsWith(".md"),
+    analyze(text: string) {
+      if (text.includes("BOOM")) throw new Error("handler broke");
+      return include.analyze(text);
+    },
+  };
+  const host = createMemoryHost({ "/a.md": "fine\n", "/bad.md": "BOOM\n" });
+  await assert.rejects(openSession({ host, entry: "/bad.md", handlers: [throwing] }), /handler broke/);
+  const session = await openSession({ host, entry: "/a.md", handlers: [throwing] });
+  await assert.rejects(session.addRoot("/bad.md"), /handler broke/);
+});
