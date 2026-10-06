@@ -119,3 +119,46 @@ fails too. That is correct, but the spec's description undersold it.
 - The version is not bumped. This is a behaviour change to a public contract (a failed call now
   rolls back; a change-triggered throw now escapes), which an embedder can observe, so it is more
   than a patch.
+
+## Step 5: two rollback gaps, and the rest of finding 2
+
+Commit 6969370. Tests 85 before, 89 after, all green. The kernel rule was amended again (d767dd3):
+after a throw the session stays at its last good state and the escaping error says so (so finding 1
+above is settled: keeping the old version `analysed` is right), and rollback covers the session's
+own work only, not a listener's.
+
+1. **Links.** `serialize` now also snapshots every link's `target` and `probes` (the two fields
+   `link()` mutates in place) and puts them back on a throw. Test, written first and red: an
+   embedder's resolver aliases a request to `/b.md`, then `/c.md` once a probed file changes; one
+   batch re-resolves that link, then a host `canonicalize` throws for a later link. After the throw
+   `edgesFrom` has to show the alias at `b` again (it showed `c`). My first attempt, with two
+   missing files that appear, did **not** go red: the edge view omits a `target` that is not a
+   session source, so the in-place mutation was invisible there. A resolver that targets an
+   existing source was needed to see it.
+2. **Listeners.** Work (`report`, `endPass`, `absorb`) now returns the `Change` instead of emitting,
+   and `serialize` announces it after the work is kept, outside the rollback. A listener's throw
+   rejects the call (or escapes on the watcher path), the session keeps its new state, and the
+   queue survives. Tests: `addRoot` rejects with `sources()` showing the new root; a change
+   escapes with the source at its new version.
+   - **Invented:** `emit` calls every listener even if one throws, then rethrows the first error.
+     Before, the first throw starved the others. The spec says nothing about several listeners; a
+     test pins mine. Later errors are dropped silently, which is the cost.
+3. **`livePasses`, `manifest`, the watch set.** None can leave the session inconsistent; no change.
+   - `livePasses` is deliberately not restored. It only decides whether a pass that ends is its
+     label's newest; `finish()` deletes its entry before it queues the work, and a newer pass may
+     have claimed the label while the work waited. Restoring would clobber that pass. After a
+     failed `end()` the label has no live pass, which is what an ended pass leaves anyway.
+   - The memoised `manifest` makes `end()` idempotent, a second call returns the same rejection
+     and runs nothing. That is the contract of the memo, not an inconsistency: the pass has ended.
+   - The watch set: `settle` sets it as its last act, after everything that can throw. A failed
+     piece of work never reaches it, and a succeeded one has already set it before anything can
+     fail, because the only thing after `settle` is the announcement, which is now outside the
+     rollback. So the watch always matches the restored nodes. The earlier worry (a listener
+     throwing after `settle`) is gone with item 2.
+4. **Sabotage.** Drop the link restore: the links test, and only it, goes red. Emit inside the
+   rollback again: both listener tests go red (the `addRoot` one and the change one); the
+   "other listeners still hear it" test stays green, as it should.
+
+**Still silent in the documents:** the kernel rule does not say what a listener's throw does to the
+other listeners; it does not say which listener's error escapes when several throw (mine: the
+first); and it says nothing about a listener that throws while the session is closing.
