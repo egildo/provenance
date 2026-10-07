@@ -6,7 +6,7 @@ import path from "node:path";
 import { openSession } from "../src/index.ts";
 import type { Change, Session } from "../src/index.ts";
 import { createNodeHost } from "../src/node.ts";
-import { byLocation, include } from "./helpers.ts";
+import { byLocation, include, keyValue } from "./helpers.ts";
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 
@@ -110,5 +110,22 @@ test("a failed write says why, and leaves nothing behind", async () => {
   const result = await host.write?.(path.join(dir, "missing", "w.conf"), new Uint8Array([97]));
   assert.equal(result?.ok, false);
   assert.deepEqual(await fs.readdir(dir), []);
+  await fs.rm(dir, { recursive: true });
+});
+
+test("a commit through the Node host writes the file, and the session hears its own write once", async () => {
+  const dir = await directory({ "w.conf": "a=1\nb=2\n" });
+  const file = path.join(dir, "w.conf");
+  const session = await openSession({ host: createNodeHost({ debounce: 50 }), entry: file, handlers: [], writers: [keyValue], writable: [dir] });
+  await sleep(100);
+  const { seen } = changes(session);
+  assert.deepEqual(await session.stage(file, "b", "3"), { ok: true });
+  const report = await session.commit();
+  assert.equal(report.sources[0]?.outcome, "written");
+  assert.equal(await fs.readFile(file, "utf8"), "a=1\nb=3\n");
+  await sleep(400); // the watcher reports the write; the session already holds that version
+  assert.equal(seen.length, 1);
+  assert.deepEqual(await fs.readdir(dir), ["w.conf"]);
+  session.close();
   await fs.rm(dir, { recursive: true });
 });

@@ -526,3 +526,46 @@ test("a failure on one source does not stop the others; the report says what lan
   assert.deepEqual(session.index().map(e => e.path), ["b"]);
   session.close();
 });
+
+test("a throw while committing rejects the call and leaves the index and the disk as they were", async () => {
+  let broken = false;
+  const writer: Writer = {
+    ...keyValue,
+    locate(data, path) {
+      if (broken) throw new Error("writer broke");
+      return keyValue.locate(data, path);
+    },
+  };
+  const memory = createMemoryHost({ "/w.conf": W });
+  const spy = spied(memory);
+  const { writes } = spy;
+  const host: Host = { ...spy.host, watch: () => ({ set: () => undefined, close: () => undefined }) }; // only the commit meets the new disk
+  const session = await openSession({ host, entry: "/w.conf", handlers: [], writers: [writer], writable: ["/"] });
+  await session.stage("/w.conf", "b", "3");
+  const before = session.index();
+  broken = true;
+  memory.write("/w.conf", "# note\na=1\nb=2\n");
+  await assert.rejects(session.commit(), /writer broke/);
+  assert.deepEqual(session.index(), before);
+  assert.deepEqual(writes, []);
+  session.close();
+});
+
+test("a handler that throws on the written text rejects the commit; the session is rolled back though the file is written", async () => {
+  const throwing: Handler = {
+    claims: location => location.endsWith(".conf"),
+    analyze(source) {
+      if (source.includes("BOOM")) throw new Error("handler broke");
+      return { requests: [] };
+    },
+  };
+  const memory = createMemoryHost({ "/w.conf": W });
+  const host: Host = { ...memory, watch: () => ({ set: () => undefined, close: () => undefined }) };
+  const session = await openOn(host, { handlers: [throwing] });
+  await session.stage("/w.conf", "b", "BOOM");
+  await assert.rejects(session.commit(), /handler broke/);
+  // The kernel's rule: a failed call leaves the session as it was. The write itself cannot be taken back.
+  assert.equal(await read(memory, "/w.conf"), "a=1\nb=BOOM\n");
+  assert.deepEqual(session.index().map(e => [e.path, e.start, e.end]), [["b", 6, 7]]);
+  session.close();
+});
