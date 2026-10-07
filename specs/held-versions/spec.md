@@ -45,6 +45,12 @@ what is reachable from its roots. The open sessions are the roots.
   serialized work ends — kept or rolled back — and when a session closes. Never during a piece of
   work, so within one piece of work a version is analysed at most once, and a rollback never leaves
   the restored state holding a version whose finding was dropped mid-work.
+  *Amended after implementation (2026-10-08): "never mid-work" is not enough with two sessions,
+  whose pieces of work interleave at every `await` — one session's sweep could drop a finding
+  another has just computed but not yet stored. A piece of work therefore also **holds** every
+  version it has analysed or taken from the cache, until it ends. No sweep waits on another
+  session: a first implementation that deferred every sweep until no session was working could
+  starve on a busy server and stop for good behind one host read that never returns.*
 - **FR-003** Sessions share: two open sessions holding the same version use one finding, analysed
   once. Two sources in one session with identical bytes share one finding, as today
   (`test/change.test.ts`, "identical files share one analysis").
@@ -83,8 +89,9 @@ Expected call counts are derived by hand from FR-001 to FR-005.
    analysis.
 
 **Sabotage**, each watched red and restored (back up to `/tmp`, mark `SABOTAGE`, grep before every
-commit): never drop (case 3 goes red: two calls, not three); drop on every safe point regardless of
-holds (cases 1 and 4 go red); drop mid-work (case 7 or 6 goes red); release a closed session's holds
+commit): never drop (cases 2 and 3 go red); drop on every safe point regardless of
+holds (cases 1 and 4 go red); drop mid-work (case 6 and a cross-session case go red; single-session case 7 cannot, since a
+source holds its version the moment it is stored — corrected after implementation); release a closed session's holds
 only at the next piece of work rather than at close (case 2 goes red: the new session's opening
 analysis finds the old finding still cached).
 

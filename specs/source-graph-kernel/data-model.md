@@ -64,7 +64,9 @@ the text the handler received. Converted to byte offsets on receipt (`offsets.ts
    not, by state), its requests resolved; each new target joins the worklist. Analysis ends when
    the worklist is empty. A cycle's second visit finds the source already present and stops.
 2. **Cache.** Findings are cached per handler object, keyed by version. The cache survives across
-   sessions sharing a handler. Resolution is not cached, so every analysis, fresh or cached,
+   sessions sharing a handler, for as long as some open session holds that version (in its graph,
+   or in a piece of work still running); an unheld finding is dropped when a piece of work ends or a
+   session closes (`specs/held-versions/`). Resolution is not cached, so every analysis, fresh or cached,
    registers its probes.
 3. **Change.** For a batch of locations: every source at one of them is re-read; a new version
    is re-analysed and its edges replaced; a missing one leaves its location's edges to re-resolve.
