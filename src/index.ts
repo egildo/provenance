@@ -90,6 +90,19 @@ export type Resolution =
   | { readonly external: string }
   | null;
 
+/**
+ * The editing half of a format plug-in (specs/editing/spec.md). Pure, like a handler: it reads and
+ * writes nothing. `path` is the format's own address of a value (a JSON Pointer, a selector and a
+ * property); `value` is opaque to Provenance. Offsets are bytes.
+ */
+export interface Writer {
+  claims(location: string): boolean;
+  /** Where the value at `path` is in `bytes`, or why it is not there. */
+  locate(bytes: Uint8Array, path: string): { readonly ok: true; readonly start: number; readonly end: number } | { readonly ok: false; readonly reason: string };
+  /** The one splice that sets the value at `path`, in the source's own style, or why it cannot. */
+  write(bytes: Uint8Array, path: string, value: unknown): { readonly ok: true; readonly edit: { readonly start: number; readonly end: number; readonly bytes: Uint8Array } } | { readonly ok: false; readonly reason: string };
+}
+
 export interface Resolver {
   claims(request: string): boolean;
   resolve(request: string, base: string, host: Host): Promise<Resolution>;
@@ -108,8 +121,12 @@ export interface PathFacility {
   resolve(base: string, segment?: string): string;
 }
 
+export type HostWriteResult = { readonly ok: true } | { readonly ok: false; readonly reason: string };
+
 export interface Host {
   read(location: string): Promise<HostReadResult>;
+  /** Optional: a host without it can stage and preview, and a commit is refused. Atomic per file. */
+  write?(location: string, bytes: Uint8Array): Promise<HostWriteResult>;
   /** The canonical identity of a location, or `undefined` when nothing is there. */
   canonicalize(location: string): Promise<string | undefined>;
   readonly paths: PathFacility;

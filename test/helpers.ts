@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { Edge, Handler, Host, Session, Source } from "../src/index.ts";
+import type { Edge, Handler, Host, Session, Source, Writer } from "../src/index.ts";
 
 /** A test-only include handler: `@include{src="…"}` on its own line requires its target. */
 export const include: Handler = {
@@ -39,3 +39,31 @@ export async function absorbed(session: Session, root: string): Promise<void> {
   await tick();
   await session.addRoot(root);
 }
+
+/**
+ * A test-only writer for a `key=value` line format, claiming `.conf`: the path is the key, the
+ * value is written as its string, and `locate` gives the range of the text after `=` on the line.
+ */
+export const keyValue: Writer = {
+  claims: location => location.endsWith(".conf"),
+  locate(bytes, path) {
+    const text = new TextDecoder().decode(bytes);
+    let offset = 0;
+    for (const line of text.split("\n")) {
+      const cut = line.indexOf("=");
+      if (cut >= 0 && line.slice(0, cut) === path) {
+        const start = offset + cut + 1;
+        const encoded = (index: number) => new TextEncoder().encode(text.slice(0, index)).length;
+        return { ok: true, start: encoded(start), end: encoded(offset + line.length) };
+      }
+      offset += line.length + 1;
+    }
+    return { ok: false, reason: `no key ${path}` };
+  },
+  write(bytes, path, value) {
+    const found = keyValue.locate(bytes, path);
+    return found.ok
+      ? { ok: true, edit: { start: found.start, end: found.end, bytes: new TextEncoder().encode(String(value)) } }
+      : found;
+  },
+};

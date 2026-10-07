@@ -15,6 +15,7 @@ import type {
   Session,
   SessionHost,
   Source,
+  Writer,
 } from "./index.ts";
 
 /** An edge as held inside the session: its target is a key (canonical location or URL), not an id. */
@@ -95,8 +96,12 @@ export async function openSession(options: {
   entry: string;
   handlers: readonly Handler[];
   resolvers?: readonly Resolver[];
+  /** The editing half of the format plug-ins; the first that claims a location is its writer. */
+  writers?: readonly Writer[];
+  /** Locations under which a commit may write. Absent means nothing is writable. */
+  writable?: readonly string[];
 }): Promise<Session> {
-  const { host, handlers, resolvers = [] } = options;
+  const { host, handlers, resolvers = [], writers = [], writable = [] } = options;
   if (typeof options.entry !== "string" || options.entry === "") throw new TypeError("entry must be a location");
 
   const ids = new Map<string, string>();

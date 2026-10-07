@@ -89,3 +89,26 @@ test("canonicalize follows a symlink; a missing file has no identity", async () 
   const refused = await host.read(path.join(dir, "missing.md"));
   assert.equal(refused.ok, false);
 });
+
+test("write replaces a file through a temporary file and a rename, so a reader never sees half of it", async () => {
+  const dir = await directory({ "w.conf": "a=1\n" });
+  const host = createNodeHost();
+  const file = path.join(dir, "w.conf");
+  const before = await fs.stat(file);
+  assert.deepEqual(await host.write?.(file, new TextEncoder().encode("a=22\n")), { ok: true });
+  assert.equal(await fs.readFile(file, "utf8"), "a=22\n");
+  // A rename gives the file a new inode; an in-place write would keep the old one.
+  assert.notEqual((await fs.stat(file)).ino, before.ino);
+  assert.equal((await fs.stat(file)).mode, before.mode);
+  assert.deepEqual(await fs.readdir(dir), ["w.conf"]); // no temporary file left behind
+  await fs.rm(dir, { recursive: true });
+});
+
+test("a failed write says why, and leaves nothing behind", async () => {
+  const dir = await directory({});
+  const host = createNodeHost();
+  const result = await host.write?.(path.join(dir, "missing", "w.conf"), new Uint8Array([97]));
+  assert.equal(result?.ok, false);
+  assert.deepEqual(await fs.readdir(dir), []);
+  await fs.rm(dir, { recursive: true });
+});

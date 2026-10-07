@@ -1,6 +1,6 @@
 // An in-memory host for any realm: POSIX paths, files held as bytes, events at the next microtask.
 
-import type { Host, HostReadResult, PathFacility } from "./index.ts";
+import type { Host, HostReadResult, HostWriteResult, PathFacility } from "./index.ts";
 
 const paths: PathFacility = {
   separator: "/",
@@ -72,9 +72,11 @@ export function createMemoryHost(files: Record<string, string | Uint8Array> = {}
         close: () => void watchers.delete(watcher),
       };
     },
-    write(location, content) {
+    /** In place. The embedder's own writes (a test changing the disk) and a session's commit both come here. */
+    async write(location, content): Promise<HostWriteResult> {
       store.set(at(location), toBytes(content));
       notify(at(location));
+      return { ok: true };
     },
     remove(location) {
       store.delete(at(location));

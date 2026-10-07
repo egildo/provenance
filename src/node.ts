@@ -6,6 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import type { Host } from "./index.ts";
 
+let counter = 0;
+
 export function createNodeHost({ debounce = 300 }: { debounce?: number } = {}): Host {
   return {
     paths: {
@@ -20,6 +22,21 @@ export function createNodeHost({ debounce = 300 }: { debounce?: number } = {}): 
       try {
         return { ok: true, bytes: await fs.readFile(location) };
       } catch (error) {
+        return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+      }
+    },
+
+    /** Atomic per file: a temporary file in the same directory, then a rename over the target. */
+    async write(location, bytes) {
+      const temporary = path.join(path.dirname(location), `.${path.basename(location)}.${process.pid}.${(counter += 1)}.tmp`);
+      try {
+        const mode = await fs.stat(location).then(stat => stat.mode, () => undefined);
+        await fs.writeFile(temporary, bytes);
+        if (mode !== undefined) await fs.chmod(temporary, mode);
+        await fs.rename(temporary, location);
+        return { ok: true };
+      } catch (error) {
+        await fs.rm(temporary, { force: true });
         return { ok: false, reason: error instanceof Error ? error.message : String(error) };
       }
     },
