@@ -19,6 +19,8 @@ function openSession(options: {
   entry: string;                       // a location the host understands
   handlers: readonly Handler[];        // registration order breaks ties
   resolvers?: readonly Resolver[];     // tried before the shipped ones
+  writers?: readonly Writer[];         // the editing half of format plug-ins; the first to claim wins
+  writable?: readonly string[];        // locations a commit may write under; absent = nothing is writable
 }): Promise<Session>;
 
 interface Session {
@@ -32,6 +34,11 @@ interface Session {
   addRoot(location: string): Promise<void>;
   removeRoot(location: string): Promise<void>;
   onChange(listener: (change: Change) => void): () => void;
+  stage(location: string, path: string, value: unknown): Promise<StageResult>;   // editing: below
+  index(): readonly StagedEdit[];
+  unstage(location: string, path?: string): Promise<void>;
+  preview(id: string): Promise<Preview | undefined>;
+  commit(): Promise<CommitReport>;
   close(): void;                       // final: queued or running work changes nothing after it
 }
 
@@ -66,8 +73,70 @@ interface Edge {
   readonly probes: readonly string[];
 }
 
-interface Change { readonly added: readonly string[]; readonly removed: readonly string[]; readonly changed: readonly string[] }
+interface Change {
+  readonly added: readonly string[];
+  readonly removed: readonly string[];
+  readonly changed: readonly string[];
+  readonly edits?: readonly EditNotice[];   // absent unless a rebase moved, overrode or dropped a staged edit
+}
 ```
+
+## Editing
+
+Specified in [`specs/editing/`](../../editing/spec.md); terms are the glossary's. Staging, unstaging,
+previewing and committing are session work, serialized and rolled back like any other (a refusal
+resolves; a throw rejects and leaves the session as it was).
+
+```ts
+interface Writer {                     // pure, like a handler; path and value are the format's own
+  claims(location: string): boolean;
+  locate(bytes: Uint8Array, path: string):
+    | { readonly ok: true; readonly start: number; readonly end: number }
+    | { readonly ok: false; readonly reason: string };
+  write(bytes: Uint8Array, path: string, value: unknown):
+    | { readonly ok: true; readonly edit: { readonly start: number; readonly end: number; readonly bytes: Uint8Array } }
+    | { readonly ok: false; readonly reason: string };
+}
+
+type StageResult = { readonly ok: true } | { readonly ok: false; readonly reason: string };
+
+interface StagedEdit {
+  readonly source: string;             // a source id
+  readonly path: string;
+  readonly value: unknown;
+  readonly base: string;               // the base version the byte address is against
+  readonly start: number;              // bytes in the base version
+  readonly end: number;
+  readonly status: "staged" | "overrides";
+  readonly disk?: Uint8Array;          // what an overriding edit will replace
+}
+
+interface Preview { readonly bytes: Uint8Array; readonly version: string }   // version: SHA-256, hex
+
+interface EditNotice {                 // one per edit a rebase moved, found overriding, or dropped
+  readonly source: string;
+  readonly path: string;
+  readonly outcome: "moved" | "overrides" | "conflicted";
+  readonly start?: number;             // the new range; absent when conflicted
+  readonly end?: number;
+  readonly disk?: Uint8Array;
+}
+
+interface CommitReport { readonly sources: readonly SourceCommit[] }
+interface SourceCommit {
+  readonly source: string;
+  readonly location: string;
+  readonly outcome: "written" | "refused" | "failed" | "conflicted";
+  readonly reason?: string;
+  readonly version?: string;           // the version written
+  readonly edits: readonly { readonly path: string; readonly outcome: "written" | "overrode" | "conflicted"; readonly disk?: Uint8Array }[];
+}
+```
+
+`stage` refuses (resolves `{ ok: false }`) a location outside the graph, one no writer claims, one
+whose disk has moved past what the session last read, the writer's own refusal, and an edit whose
+range overlaps another staged edit's. A writer's range outside the bytes it was given throws a
+`RangeError`. `commit` is not atomic across files: its report says what landed.
 
 ## Handlers
 
@@ -134,8 +203,11 @@ interface PathFacility {               // Cascata's shape
   resolve(base: string, segment?: string): string;
 }
 
+type HostWriteResult = { readonly ok: true } | { readonly ok: false; readonly reason: string };
+
 interface Host {
   read(location: string): Promise<HostReadResult>;            // Cascata's
+  write?(location: string, bytes: Uint8Array): Promise<HostWriteResult>;   // optional; atomic per file
   canonicalize(location: string): Promise<string | undefined>; // Cascata's; undefined = nothing there
   readonly paths: PathFacility;                                // optional in Cascata, required here
   watch(onChange: (locations: readonly string[]) => void): {
@@ -156,13 +228,13 @@ interface SessionHost {                // satisfies Cascata's Host by shape; no 
 ```ts
 // @egildo/provenance/memory
 function createMemoryHost(files?: Record<string, string | Uint8Array>): Host & {
-  write(location: string, content: string | Uint8Array): void;   // create or change; notifies
+  write(location: string, content: string | Uint8Array): Promise<HostWriteResult>;   // create or change in place; notifies
   remove(location: string): void;                                 // notifies
   refuse(location: string, reason: string): void;                 // reads fail with reason
 };
 
 // @egildo/provenance/node
-function createNodeHost(options?: { debounce?: number }): Host;   // default 300 ms
+function createNodeHost(options?: { debounce?: number }): Host;   // default 300 ms; `write` is a temporary file, then a rename
 ```
 
 The memory host uses POSIX paths and delivers events at the next microtask, so changes made in
