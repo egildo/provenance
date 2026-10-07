@@ -26,7 +26,39 @@ export interface Session {
   unstage(location: string, path?: string): Promise<void>;
   /** The source's base with every staged edit spliced in, or `undefined` when none is staged. */
   preview(id: string): Promise<Preview | undefined>;
+  /**
+   * Writes every source with staged edits, one file at a time and each atomically, rebasing first
+   * where the disk moved. Not atomic across files: the report says exactly what landed.
+   */
+  commit(): Promise<CommitReport>;
   close(): void;
+}
+
+export interface CommitReport {
+  /** One entry per source that had staged edits, in the order they were first staged. */
+  readonly sources: readonly SourceCommit[];
+}
+
+export interface SourceCommit {
+  readonly source: string;
+  readonly location: string;
+  /**
+   * `written`; `refused` (outside every writable root, or the host has no write verb); `failed`
+   * (the host's reason; the edits are kept); `conflicted` (every edit's target was gone, so
+   * nothing was written).
+   */
+  readonly outcome: "written" | "refused" | "failed" | "conflicted";
+  readonly reason?: string;
+  /** The version written. */
+  readonly version?: string;
+  /** What became of each edit that was written or dropped; empty when refused or failed. */
+  readonly edits: readonly {
+    readonly path: string;
+    /** `overrode`: the value on disk had changed, and the edit replaced it. */
+    readonly outcome: "written" | "overrode" | "conflicted";
+    /** The bytes on disk that an overriding edit replaced. */
+    readonly disk?: Uint8Array;
+  }[];
 }
 
 export type StageResult = { readonly ok: true } | { readonly ok: false; readonly reason: string };

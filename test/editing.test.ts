@@ -274,3 +274,255 @@ test("a read pass that ends on newer bytes rebases the edits too", async () => {
   assert.deepEqual(session.index().map(e => [e.start, e.end]), [[13, 14]]);
   session.close();
 });
+
+// Commit (FR-009, FR-010).
+
+/** A host that records the writes it is asked to make, and can be made to fail them or to lack the verb. */
+function spied(memory: ReturnType<typeof createMemoryHost>, options: { fail?: string; noWrite?: boolean } = {}) {
+  const writes: [string, string][] = [];
+  const host: Host = {
+    ...memory,
+    ...(options.noWrite ? { write: undefined } : {}),
+    ...(options.noWrite
+      ? {}
+      : {
+          async write(location: string, data: Uint8Array) {
+            writes.push([location, text(data)]);
+            return options.fail === undefined ? memory.write(location, data) : { ok: false as const, reason: options.fail };
+          },
+        }),
+  };
+  return { host, writes };
+}
+
+async function openOn(host: Host, extra: { writable?: readonly string[]; handlers?: readonly Handler[]; entry?: string } = {}) {
+  return openSession({ host, entry: extra.entry ?? "/w.conf", handlers: extra.handlers ?? [], writers: [keyValue], writable: extra.writable ?? ["/"] });
+}
+
+const read = async (memory: Host, location: string) => {
+  const result = await memory.read(location);
+  return result.ok ? text(result.bytes) : result.reason;
+};
+
+test("case 1: a staged edit is written, only its value moves, and the session reads the new version", async () => {
+  const memory = createMemoryHost({ "/w.conf": W });
+  const { host, writes } = spied(memory);
+  const session = await openOn(host);
+  const id = idOf(session, "/w.conf");
+  await session.stage("/w.conf", "b", "3");
+  const changes = heard(session);
+  const report = await session.commit();
+  assert.deepEqual(report, { sources: [{ source: id, location: "/w.conf", outcome: "written", version: sha(bytes("a=1\nb=3\n")), edits: [{ path: "b", outcome: "written" }] }] });
+  assert.deepEqual(writes, [["/w.conf", "a=1\nb=3\n"]]);
+  assert.equal(await read(memory, "/w.conf"), "a=1\nb=3\n");
+  assert.deepEqual(session.index(), []);
+  assert.deepEqual(changes, [{ added: [], removed: [], changed: [id] }]);
+  const source = byLocation(session, "/w.conf");
+  assert.equal(source.state === "leaf" && source.version, sha(bytes("a=1\nb=3\n")));
+  session.close();
+});
+
+test("FR-010: the session absorbs its own write by re-analysing, once", async () => {
+  let calls = 0;
+  const handler: Handler = { claims: l => l.endsWith(".conf"), analyze: () => (calls++, { requests: [] }) };
+  const memory = createMemoryHost({ "/w.conf": W });
+  const session = await openOn(memory, { handlers: [handler] });
+  assert.equal(calls, 1);
+  await session.stage("/w.conf", "b", "3");
+  await session.commit();
+  assert.equal(calls, 2);
+  await tick(); // the host's own change event for the write arrives, and finds the version already held
+  await absorbed(session, "/w.conf");
+  assert.equal(calls, 2);
+  session.close();
+});
+
+test("case 2 and 12: nothing staged, nothing written; and a second commit writes nothing", async () => {
+  const memory = createMemoryHost({ "/w.conf": W });
+  const { host, writes } = spied(memory);
+  const session = await openOn(host);
+  assert.deepEqual(await session.commit(), { sources: [] });
+  assert.deepEqual(writes, []);
+  await session.stage("/w.conf", "b", "3");
+  await session.commit();
+  assert.equal(writes.length, 1);
+  assert.deepEqual(await session.commit(), { sources: [] });
+  assert.equal(writes.length, 1);
+  session.close();
+});
+
+test("case 3: an edit rebased onto a changed disk is written where its path now is", async () => {
+  const memory = createMemoryHost({ "/w.conf": W });
+  const session = await openOn(memory);
+  await session.stage("/w.conf", "b", "3");
+  memory.write("/w.conf", "# note\na=1\nb=2\n");
+  await absorbed(session, "/w.conf");
+  const report = await session.commit();
+  assert.deepEqual(report.sources.map(s => [s.outcome, s.edits]), [["written", [{ path: "b", outcome: "written" }]]]);
+  assert.equal(await read(memory, "/w.conf"), "# note\na=1\nb=3\n");
+  session.close();
+});
+
+test("a commit rebases first when the disk moved and the session has not heard yet", async () => {
+  const memory = createMemoryHost({ "/w.conf": W });
+  const session = await openOn(memory);
+  const id = idOf(session, "/w.conf");
+  await session.stage("/w.conf", "b", "3");
+  const changes = heard(session);
+  memory.write("/w.conf", "# note\na=1\nb=2\n");
+  const report = await session.commit(); // queued before the change event is absorbed
+  assert.equal(report.sources[0]?.outcome, "written");
+  assert.equal(await read(memory, "/w.conf"), "# note\na=1\nb=3\n");
+  assert.deepEqual(changes[0]?.edits, [{ source: id, path: "b", outcome: "moved", start: 13, end: 14 }]);
+  session.close();
+});
+
+test("case 4: the last to commit wins, per value: the disk's bytes are replaced and the report says so", async () => {
+  const memory = createMemoryHost({ "/w.conf": W });
+  const session = await openOn(memory);
+  await session.stage("/w.conf", "b", "3");
+  memory.write("/w.conf", "a=1\nb=5\n");
+  await absorbed(session, "/w.conf");
+  const report = await session.commit();
+  assert.deepEqual(report.sources[0]?.edits, [{ path: "b", outcome: "overrode", disk: bytes("5") }]);
+  assert.equal(await read(memory, "/w.conf"), "a=1\nb=3\n");
+  session.close();
+});
+
+test("case 4, unabsorbed: a commit that finds the value changed on disk overrides it and says so", async () => {
+  const memory = createMemoryHost({ "/w.conf": W });
+  const session = await openOn(memory);
+  await session.stage("/w.conf", "b", "3");
+  memory.write("/w.conf", "a=1\nb=5\n");
+  const report = await session.commit();
+  assert.deepEqual(report.sources[0]?.edits, [{ path: "b", outcome: "overrode", disk: bytes("5") }]);
+  assert.equal(await read(memory, "/w.conf"), "a=1\nb=3\n");
+  session.close();
+});
+
+test("case 5: a disk change to another value is kept", async () => {
+  const memory = createMemoryHost({ "/w.conf": W });
+  const session = await openOn(memory);
+  await session.stage("/w.conf", "b", "3");
+  memory.write("/w.conf", "a=9\nb=2\n");
+  await absorbed(session, "/w.conf");
+  await session.commit();
+  assert.equal(await read(memory, "/w.conf"), "a=9\nb=3\n");
+  session.close();
+});
+
+test("case 6: a conflicted edit is never written", async () => {
+  const memory = createMemoryHost({ "/w.conf": W });
+  const { host, writes } = spied(memory);
+  const session = await openOn(host);
+  await session.stage("/w.conf", "b", "3");
+  memory.write("/w.conf", "a=1\n");
+  await absorbed(session, "/w.conf");
+  assert.deepEqual(await session.commit(), { sources: [] });
+  assert.deepEqual(writes, []);
+  session.close();
+});
+
+test("case 6, unabsorbed: a commit that finds the path gone reports the source conflicted and writes nothing", async () => {
+  const memory = createMemoryHost({ "/w.conf": W });
+  const { host, writes } = spied(memory);
+  const session = await openOn(host);
+  const id = idOf(session, "/w.conf");
+  await session.stage("/w.conf", "b", "3");
+  memory.write("/w.conf", "a=1\n");
+  const report = await session.commit();
+  assert.deepEqual(report, { sources: [{ source: id, location: "/w.conf", outcome: "conflicted", edits: [{ path: "b", outcome: "conflicted" }] }] });
+  assert.deepEqual(writes, []);
+  assert.deepEqual(session.index(), []);
+  session.close();
+});
+
+test("case 8: two edits in one source are both written, and nothing else moves", async () => {
+  const memory = createMemoryHost({ "/w.conf": W });
+  const session = await openOn(memory);
+  await session.stage("/w.conf", "a", "77");
+  await session.stage("/w.conf", "b", "3");
+  await session.commit();
+  const disk = await memory.read("/w.conf");
+  assert.equal(disk.ok && text(disk.bytes), "a=77\nb=3\n");
+  assert.equal(disk.ok && disk.bytes.length, 9);
+  session.close();
+});
+
+test("case 9: with no writable root, a commit is refused and the edit is kept", async () => {
+  const memory = createMemoryHost({ "/w.conf": W });
+  const { host, writes } = spied(memory);
+  const session = await openSession({ host, entry: "/w.conf", handlers: [], writers: [keyValue] }); // `writable` absent
+  const id = idOf(session, "/w.conf");
+  await session.stage("/w.conf", "b", "3");
+  const report = await session.commit();
+  assert.deepEqual(report, { sources: [{ source: id, location: "/w.conf", outcome: "refused", reason: "/w.conf is outside every writable root", edits: [] }] });
+  assert.deepEqual(writes, []);
+  assert.equal(await read(memory, "/w.conf"), W);
+  assert.equal(session.index().length, 1);
+  session.close();
+});
+
+test("case 11: a host that fails the write: the report says why, and the edit is kept", async () => {
+  const memory = createMemoryHost({ "/w.conf": W });
+  const { host } = spied(memory, { fail: "disk full" });
+  const session = await openOn(host);
+  const id = idOf(session, "/w.conf");
+  await session.stage("/w.conf", "b", "3");
+  const report = await session.commit();
+  assert.deepEqual(report, { sources: [{ source: id, location: "/w.conf", outcome: "failed", reason: "disk full", edits: [] }] });
+  assert.equal(await read(memory, "/w.conf"), W);
+  assert.equal(session.index().length, 1);
+  session.close();
+});
+
+test("a host without a write verb can stage and preview, and its commit is refused", async () => {
+  const memory = createMemoryHost({ "/w.conf": W });
+  const { host } = spied(memory, { noWrite: true });
+  const session = await openOn(host);
+  await session.stage("/w.conf", "b", "3");
+  assert.equal(text((await session.preview(idOf(session, "/w.conf")))?.bytes ?? new Uint8Array()), "a=1\nb=3\n");
+  const report = await session.commit();
+  assert.equal(report.sources[0]?.outcome, "refused");
+  assert.match(report.sources[0]?.reason ?? "", /cannot write/);
+  assert.equal(session.index().length, 1);
+  session.close();
+});
+
+test("case 13: the sandbox is per source, judged on whole path segments", async () => {
+  const memory = createMemoryHost({ "/d/w.conf": W, "/x/x.conf": "a=1\n", "/dd/y.conf": "a=1\n" });
+  const { host, writes } = spied(memory);
+  const session = await openSession({ host, entry: "/d/w.conf", handlers: [], writers: [keyValue], writable: ["/d"] });
+  await session.addRoot("/x/x.conf");
+  await session.addRoot("/dd/y.conf");
+  await session.stage("/d/w.conf", "b", "3");
+  await session.stage("/x/x.conf", "a", "2");
+  await session.stage("/dd/y.conf", "a", "2"); // "/dd" is not under "/d"
+  const report = await session.commit();
+  assert.deepEqual(report.sources.map(s => [s.location, s.outcome]), [["/d/w.conf", "written"], ["/x/x.conf", "refused"], ["/dd/y.conf", "refused"]]);
+  assert.deepEqual(writes, [["/d/w.conf", "a=1\nb=3\n"]]);
+  assert.deepEqual(session.index().map(e => e.path), ["a", "a"]); // the refused ones are kept
+  session.close();
+});
+
+test("a failure on one source does not stop the others; the report says what landed", async () => {
+  const memory = createMemoryHost({ "/w.conf": W, "/v.conf": "a=1\n" });
+  const writes: string[] = [];
+  const host: Host = {
+    ...memory,
+    async write(location, data) {
+      writes.push(location);
+      return location === "/w.conf" ? { ok: false, reason: "disk full" } : memory.write(location, data);
+    },
+  };
+  const session = await openOn(host);
+  await session.addRoot("/v.conf");
+  await session.stage("/w.conf", "b", "3");
+  await session.stage("/v.conf", "a", "2");
+  const report = await session.commit();
+  assert.deepEqual(report.sources.map(s => [s.location, s.outcome]), [["/w.conf", "failed"], ["/v.conf", "written"]]);
+  assert.deepEqual(writes, ["/w.conf", "/v.conf"]);
+  assert.equal(await read(memory, "/v.conf"), "a=2\n");
+  assert.deepEqual(session.index().map(e => e.path), ["b"]);
+  session.close();
+});

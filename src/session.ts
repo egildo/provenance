@@ -7,6 +7,7 @@ import type {
   Change,
   Edge,
   EditNotice,
+  CommitReport,
   Findings,
   Handler,
   Host,
@@ -17,6 +18,7 @@ import type {
   Session,
   SessionHost,
   Source,
+  SourceCommit,
   StagedEdit,
   StageResult,
   Writer,
@@ -623,6 +625,43 @@ export async function openSession(options: {
     return { ok: true };
   }
 
+  /** Whether a commit may write here: under a writable root, judged on whole segments of canonical locations. */
+  async function isWritable(key: string): Promise<boolean> {
+    const { separator, resolve } = host.paths;
+    for (const root of writable) {
+      const canonical = (await host.canonicalize(root)) ?? resolve(root);
+      const prefix = canonical.endsWith(separator) ? canonical : canonical + separator;
+      if (key === canonical || key.startsWith(prefix)) return true;
+    }
+    return false;
+  }
+
+  /** Commits one source's staged edits (FR-009). The edits leave the index only when written or dropped. */
+  async function commitSource(key: string, staging: Staging, changed: string[]): Promise<SourceCommit> {
+    const source = idFor(key);
+    const nothing = (outcome: "refused" | "failed", reason: string): SourceCommit => ({ source, location: key, outcome, reason, edits: [] });
+    if (!(await isWritable(key))) return nothing("refused", `${key} is outside every writable root`);
+    if (host.write === undefined) return nothing("refused", "the host cannot write");
+    const read = await host.read(key);
+    if (!read.ok) return nothing("failed", read.reason);
+    const first = notices.length;
+    const version = await sha256(read.bytes);
+    if (version !== staging.version) rebase(key, staging, read.bytes, version);
+    const dropped = notices.slice(first).filter(n => n.outcome === "conflicted" && n.source === source);
+    const edits: SourceCommit["edits"][number][] = dropped.map(n => ({ path: n.path, outcome: "conflicted" }));
+    const remaining = staged.get(key);
+    if (!remaining) return { source, location: key, outcome: "conflicted", edits };
+    const bytes = splice(remaining.base, remaining.edits);
+    const written = await host.write(key, bytes);
+    if (!written.ok) return nothing("failed", written.reason);
+    for (const e of remaining.edits) edits.push(e.status === "overrides" && e.disk ? { path: e.path, outcome: "overrode", disk: e.disk } : { path: e.path, outcome: "written" });
+    staged.delete(key);
+    const fresh = await load(key, false);
+    if (versionOf(fresh) !== versionOf(nodes.get(key))) changed.push(key);
+    nodes.set(key, fresh);
+    return { source, location: key, outcome: "written", version: await sha256(bytes), edits };
+  }
+
   const session: Session = {
     read,
     sources: () => [...nodes.values()].map(view),
@@ -699,6 +738,16 @@ export async function openSession(options: {
           staging.preview = version;
         }
         result = { bytes, version };
+      }).then(() => result);
+    },
+    commit() {
+      let result: CommitReport = { sources: [] };
+      return serialize(async () => {
+        const changed: string[] = [];
+        const sources: SourceCommit[] = [];
+        for (const [key, staging] of [...staged]) sources.push(await commitSource(key, staging, changed));
+        result = { sources };
+        return report(changed);
       }).then(() => result);
     },
     close() {
