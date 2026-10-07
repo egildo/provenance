@@ -235,7 +235,9 @@ host imports a platform module.
   runs after that work is kept, and its throw rejects the call (or escapes) without undoing it;
   every other listener is still told, and the first throw is the one raised. A write to disk cannot be
   rolled back, so a commit's successful writes are kept: a throw after a file is written rejects the
-  call and leaves that file committed — its edits out of the index, the written version its base.
+  call and leaves that file committed: its edits leave the index, and the session learns the
+  written version as it learns any change, from the host's report (where a re-analysis that throws
+  escapes, by the rule above).
 
 **Caching and change**
 

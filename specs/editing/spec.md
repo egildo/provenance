@@ -71,7 +71,8 @@ way the `include` handler tests the kernel. The real YAML and JSON plug-in is Ca
   - found, and the bytes differ → the value changed on disk; the edit moves and its status becomes
     `"overrides"`, carrying the disk's bytes so the embedder can say what will be overwritten;
   - gone → the edit is **conflicted**: dropped from the index and reported.
-  Every move, override and drop is reported to change listeners: `Change` gains an optional
+  Every move, override, drop and respelling (same range, different bytes) is reported to change
+  listeners: `Change` gains an optional
   `edits` member listing them. Nothing silent.
 - **FR-009** **Commit.** `session.commit()` writes every source with staged edits, one file at a time,
   each atomically (FR-002). For each: read the disk; if its version is not the base, rebase first
