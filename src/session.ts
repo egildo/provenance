@@ -41,24 +41,19 @@ type Node = State & { readonly id: string; readonly key: string; links: Link[] }
 const cache = new WeakMap<Handler, Map<string, Findings>>();
 
 /**
- * What every open session holds: the handler and version of each source it has analysed. A finding
- * lives while some open session holds it (specs/held-versions/); `sweep` drops the rest.
+ * What every open session holds: the handler and version of each source it has analysed, and of
+ * each finding its running piece of work has taken from the cache or made so far. A finding lives
+ * while some open session holds it (specs/held-versions/); `sweep` drops the rest.
  */
 const open = new Set<() => Iterable<readonly [Handler, string]>>();
-/** Sessions with a piece of work running. A finding is dropped between pieces of work, never during one. */
-let busy = 0;
-/** Handlers whose cache may hold an unheld finding, until the next sweep that may run. */
-const dirty = new Set<Handler>();
 
 /**
- * Drops from the cache of each given handler every version no open session holds, unless some
- * session is mid-work, in which case the last one to finish does it.
+ * Drops from the cache of each given handler every version no open session holds. Safe at the end
+ * of any session's piece of work: a session mid-work holds what its piece has met.
  * ponytail: walks every held source of every open session per sweep; keep a count per version if
  * a session of many thousands of sources ever makes that cost show.
  */
 function sweep(handlers: readonly Handler[]) {
-  for (const handler of handlers) dirty.add(handler);
-  if (busy > 0) return;
   const held = new Map<Handler, Set<string>>();
   for (const holds of open) {
     for (const [handler, version] of holds()) {
@@ -66,11 +61,10 @@ function sweep(handlers: readonly Handler[]) {
       held.set(handler, versions.add(version));
     }
   }
-  for (const handler of dirty) {
+  for (const handler of handlers) {
     const byVersion = cache.get(handler);
     if (byVersion) for (const version of byVersion.keys()) if (!held.get(handler)?.has(version)) byVersion.delete(version);
   }
-  dirty.clear();
 }
 
 async function sha256(bytes: Uint8Array): Promise<string> {
@@ -118,7 +112,10 @@ export async function openSession(options: {
   const watch = host.watch(locations => void serialize(() => absorb(locations)).catch(error => Promise.reject(error)));
   let queue: Promise<unknown> = Promise.resolve();
   let closed = false;
+  /** What the running piece of work has analysed or read from the cache; released when it ends. */
+  const inFlight: (readonly [Handler, string])[] = [];
   function* holds() {
+    yield* inFlight;
     for (const node of nodes.values()) {
       if (node.state !== "analysed") continue;
       const handler = handlers.find(h => h.claims(node.key));
@@ -145,7 +142,6 @@ export async function openSession(options: {
         links: [...nodes.values()].flatMap(node => node.links.map(l => ({ link: l, target: l.target, probes: l.probes }))),
       };
       let change: Change | void;
-      busy++;
       try {
         change = await work();
       } catch (error) {
@@ -161,7 +157,7 @@ export async function openSession(options: {
         throw error;
       } finally {
         // After a rollback has restored the nodes, so the versions it went back to are still held.
-        busy--;
+        inFlight.length = 0;
         sweep(handlers);
       }
       if (change) emit(change);
@@ -226,6 +222,7 @@ export async function openSession(options: {
     if (!byVersion) cache.set(handler, (byVersion = new Map()));
     let findings = byVersion.get(version);
     if (!findings) byVersion.set(version, (findings = handler.analyze(text)));
+    inFlight.push([handler, version]);
 
     const indices = findings.requests.flatMap(r => [r.start, r.end]);
     const offsets = byteOffsets(text, indices);

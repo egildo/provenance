@@ -91,3 +91,32 @@ in `close()`.
   entry for **Artifact** ("cached by version") will need the same sentence when artifacts are built.
 - `FR-002` of this spec: add the cross-session rule (finding 1).
 - Release: an observable kernel promise changed (analyses can repeat), so 0.4.0 is right.
+
+## Round 2: per-session in-flight holds replace `busy`
+
+Tests 97 before, 98 after, all green. Commit: see `git log` (the change and this section).
+
+The global `busy` counter had two ceilings: overlapping sessions never reach zero, so a busy
+server never sweeps (the growth returns), and one stuck piece (a host `read` that never resolves)
+blocks every session's sweep. Replaced by an `inFlight` list per session: `load` adds the
+`[handler, version]` it analysed or took from the cache; `holds()` yields those plus its nodes';
+the `finally` clears it after any rollback restore and then sweeps. `busy`, `dirty` and their
+deferral are gone; a session mid-work holds only its own piece's versions, and nothing waits on
+anyone else.
+
+- New test, red under `busy` first: "a stuck session does not stop another from sweeping" (A's
+  piece hangs on a host `read` held by a promise; B goes v1, v2, v1 and is analysed three times).
+- The cross-session case stays green under the new shape.
+- Sabotage: drop `inFlight` from `holds()`: the cross-session case 7 goes red. Never clear
+  `inFlight`: the stuck-session test and case 3 go red (nothing is ever released). Clear
+  `inFlight` before the rollback restore: **nothing goes red on its own**, because the `catch`
+  runs synchronously and no other session can sweep in between; the order matters only if a sweep
+  runs there. With a sweep added in the `catch` ahead of the restore (what the order would allow),
+  case 6 goes red. So the "clear after the restore" ordering is a convention the tests cannot
+  enforce, only the sweep-after-restore it protects.
+
+**Still wrong or silent in the documents.** FR-002 should say "a session holds, besides its
+sources, what its running piece has met" and drop any suggestion of waiting on other sessions; my
+round-1 finding 1 is superseded by this section. One residue: a piece that hangs holds its
+in-flight versions for as long as it hangs, a bounded and per-session cost. The spec does not say
+a hung piece may do that.

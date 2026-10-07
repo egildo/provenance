@@ -137,3 +137,34 @@ test("case 7, across sessions: another session ending its work does not drop a f
   one.close();
   two.close();
 });
+
+test("a stuck session does not stop another from sweeping", async () => {
+  const handler = counting();
+  const memory = createMemoryHost({ "/a.md": "k\n", "/p.md": "p\n" });
+  let hang: Promise<void> | undefined;
+  const host: Host = {
+    ...memory,
+    async read(location) {
+      if (location === "/p.md") await hang; // a read that does not come back
+      return memory.read(location);
+    },
+  };
+  const mine = createMemoryHost({ "/b.md": "one\n" });
+  const stuck = await openSession({ host, entry: "/a.md", handlers: [handler] });
+  const other = await openSession({ host: mine, entry: "/b.md", handlers: [handler] });
+  assert.equal(handler.calls, 2); // a.md; b.md
+
+  let release!: () => void;
+  hang = new Promise<void>(resolve => (release = resolve));
+  const adding = stuck.addRoot("/p.md"); // a piece of work that never ends, for now
+  await tick();
+  mine.write("/b.md", "two\n");
+  await absorbed(other, "/b.md");
+  mine.write("/b.md", "one\n");
+  await absorbed(other, "/b.md");
+  assert.equal(handler.calls, 4); // two, then one again: the first "one" was dropped when b.md left it
+  release();
+  await adding;
+  stuck.close();
+  other.close();
+});
