@@ -223,8 +223,9 @@ host imports a platform module.
 - **`query-the-graph`**: A session MUST answer: every source with its version and state; the
   edges out of and into a source; every unresolved edge; every cycle.
 - **`broken-is-reported-not-thrown`**: A missing file, a refused read, an unresolvable request,
-  undecodable text and a cycle MUST be reported as state and never thrown. Invalid arguments and a
-  handler that throws are programmer errors and MUST throw. *Amended 2026-10-06
+  undecodable text and a cycle MUST be reported as state and never thrown. Invalid arguments, a
+  handler or a writer that throws, and a writer's range outside the bytes are programmer errors and
+  MUST throw. *Amended 2026-10-06
   (`specs/offset-conversion/`): where it throws to.* A throw during work an embedder's call
   started MUST reject that call and MUST leave the session as it was before the call — a root the
   call added, or the roots a read pass's `end()` installed, are rolled back. A throw during work no

@@ -81,7 +81,8 @@ that can disagree about where its bytes are.
    - the path is found and its value on disk is unchanged since the edit's base → the edit
      carries over;
    - the path is found but its value on disk changed → **the session's edit wins** (last saver
-     wins, per value), and the session is told it is overriding a newer value;
+     wins, per value), and the session is told it is overriding a newer value, with the disk's bytes
+     it will replace; the edit stays marked as overriding until it is staged again;
    - the path is gone → the edit is dropped, and the session is told.
 4. **Commit.** Each source's preview is written if the disk still holds its base; if not, step 3
    runs first. Afterwards the written bytes are the new base and the index empties for that source.

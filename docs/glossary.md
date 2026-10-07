@@ -40,7 +40,7 @@ Written with a capital, Provenance is the library.
 
 **Host.** Whatever supplies Provenance with everything outside the call: bytes, canonical identity, path facts, watch events and writes. It answers what is there, never what is allowed. A Node host ships as a separate entry point.
 
-**Index.** The staged edits of a session, in groups, with a position map per touched source from its preview back to its base. *(editing)*
+**Index.** The staged edits of a session, in groups, with a position map per touched source from its preview back to its base. *(editing)* *The first slice (`specs/editing/`) builds the index without groups or a position map: one edit per path, per source.*
 
 **Leaf.** A source no handler parses, such as an image or a font. Addressable as a whole or by byte range, a possible edge target, and replaceable by a file operation.
 
@@ -54,7 +54,7 @@ Written with a capital, Provenance is the library.
 
 **Probe.** A location a resolver tried while resolving a request, whether or not anything was there. A file appearing at a probe re-resolves the edge that probed it. Probes belong to the cached result of a resolution, and a cache hit re-registers them.
 
-**Rebase.** Moving staged edits onto a source's new version when the file changes on disk: each edit asks the format plug-in to find its semantic address in the new version and to write its value there again. Found, it moves; gone, it is conflicted. *Amended 2026-10-08 (`write-back.md`): it searched for the old span's bytes with a little context, which fails exactly when the value itself changed.* *(editing)*
+**Rebase.** Moving staged edits onto a source's new version when the file changes on disk: each edit asks the format plug-in to find its semantic address in the new version and to write its value there again. Found, it moves; gone, it is conflicted. *Amended 2026-10-08 (`write-back.md`): it searched for the old span's bytes with a little context, which fails exactly when the value itself changed.* *(editing)* An edit that moved keeps its status: one that overrides a value changed on disk goes on overriding it until it is staged again.
 
 **Reconciliation.** The query that matches declared edges against observed ones and names every disagreement. It can run at any time, because observation is a window rather than a moment. *(observation)*
 
@@ -76,7 +76,7 @@ Written with a capital, Provenance is the library.
 
 **Source.** A file Provenance knows, or a virtual source carved out of one. Has an identity Provenance mints and keeps stable, a path, a kind, and a version.
 
-**Stage.** *Not Provenance's.* The browser projection the CSS tools build from preview versions. Provenance supplies what a stage is built from and never builds one. Its edits, however, are **staged**: held in the index, not yet committed.
+**Stage.** *Not Provenance's.* The browser projection the CSS tools build from preview versions. Provenance supplies what a stage is built from and never builds one. Its edits, however, are **staged**: held in the index, not yet committed. *The verb is Provenance's (`session.stage`); the noun is not.*
 
 **Stamp.** An address written into rendered output as a `data-*` attribute, such as `data-src="s12:1840-1932"`: a source identity and a byte range, with the version left to the render manifest. Only a renderer can stamp; Provenance supplies the codec and helpers.
 

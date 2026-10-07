@@ -27,6 +27,8 @@ way the `include` handler tests the kernel. The real YAML and JSON plug-in is Ca
   `path` and `value` are opaque to Provenance; the writer owns them. Writers are pure, like handlers:
   no reads, no writes. `openSession` takes `writers?: readonly Writer[]`; the first that claims a
   location is its writer.
+  *As built: `path` is a string, so edits at one path can be compared and replaced; `value` is
+  opaque.*
 - **FR-002** `Host` gains an **optional** `write(location, bytes): Promise<{ ok: true } | { ok: false;
   reason }>`. Optional, like Cascata's verbs: a host without it can stage and preview, and commit
   refuses. The Node host writes atomically per file — a temporary file in the same directory, then a
@@ -54,6 +56,9 @@ way the `include` handler tests the kernel. The real YAML and JSON plug-in is Ca
   like every other piece (the kernel's `broken-is-reported-not-thrown`). A preview is held like any
   version under `cache-by-handler-and-hash` while its edits are staged.
 
+  *As built: a preview is analysed when `preview()` is called, and its version is held while its
+  edits stand; nothing exposes its findings yet.*
+
 **Rebase and commit**
 
 - **FR-008** **Rebase.** When the host reports a new version of a source with staged edits, each
@@ -72,6 +77,9 @@ way the `include` handler tests the kernel. The real YAML and JSON plug-in is Ca
   disk bytes replaced) or `conflicted`; per source, `written`, `refused` (outside the sandbox, or no
   `write` verb) or `failed` (the host's reason, its edits kept). A failure on one source does not stop
   the others; a commit is not atomic across files, and the report says exactly what landed.
+  *As built: a source whose every edit is conflicted at commit reports `conflicted`; a commit that
+  cannot read the disk reports `failed` and keeps the edits, while the watcher treats a vanished file
+  as conflicted — the host cannot tell a transient error from a deletion.*
 - **FR-010** After a commit, the session absorbs its own writes as it absorbs any change: written
   sources are re-read and re-analysed, so validation is re-analysis.
 
