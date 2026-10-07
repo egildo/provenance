@@ -237,8 +237,12 @@ host imports a platform module.
 **Caching and change**
 
 - **`cache-by-handler-and-hash`**: Analysis MUST be cached by handler and version, so the same
-  bytes under the same handler are analysed at most once. No operation MUST exist to invalidate
-  it.
+  bytes under the same handler are analysed at most once **while some open session holds a source
+  at that version**. No operation MUST exist to invalidate it. *Amended 2026-10-07
+  (`specs/held-versions/`): it said "at most once", unconditionally, which kept every version of
+  every source for as long as its handler lived. A finding nobody holds is now dropped when a piece
+  of session work ends or a session closes, never mid-work; meeting that version again analyses it
+  again.*
 - **`cache-hit-reregisters-probes`**: A cache hit MUST register the probes of the result it
   replays, exactly as a fresh analysis would.
 - **`reanalyse-only-what-changed`**: When the host reports a change, Provenance MUST re-read that

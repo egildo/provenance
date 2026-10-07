@@ -90,6 +90,9 @@ mark it `SABOTAGE`; grep for it before committing.
 
 ## Parked: the findings cache (issue #3's third point)
 
+*Taken up 2026-10-07 by `specs/held-versions/`: the owner chose to revise the rule — findings
+live while some open session holds their version. The text below stays as history.*
+
 The issue proposes keeping a version's findings only while some open session holds a source at that
 version. The kernel specification's `cache-by-handler-and-hash` says "the same bytes under the same
 handler are analysed **at most once**" and "No operation MUST exist to invalidate it". Evicting
