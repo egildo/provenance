@@ -40,6 +40,39 @@ type Node = State & { readonly id: string; readonly key: string; links: Link[] }
 /** Findings per handler and version, shared by every session that uses the handler. */
 const cache = new WeakMap<Handler, Map<string, Findings>>();
 
+/**
+ * What every open session holds: the handler and version of each source it has analysed. A finding
+ * lives while some open session holds it (specs/held-versions/); `sweep` drops the rest.
+ */
+const open = new Set<() => Iterable<readonly [Handler, string]>>();
+/** Sessions with a piece of work running. A finding is dropped between pieces of work, never during one. */
+let busy = 0;
+/** Handlers whose cache may hold an unheld finding, until the next sweep that may run. */
+const dirty = new Set<Handler>();
+
+/**
+ * Drops from the cache of each given handler every version no open session holds, unless some
+ * session is mid-work, in which case the last one to finish does it.
+ * ponytail: walks every held source of every open session per sweep; keep a count per version if
+ * a session of many thousands of sources ever makes that cost show.
+ */
+function sweep(handlers: readonly Handler[]) {
+  for (const handler of handlers) dirty.add(handler);
+  if (busy > 0) return;
+  const held = new Map<Handler, Set<string>>();
+  for (const holds of open) {
+    for (const [handler, version] of holds()) {
+      const versions = held.get(handler) ?? new Set<string>();
+      held.set(handler, versions.add(version));
+    }
+  }
+  for (const handler of dirty) {
+    const byVersion = cache.get(handler);
+    if (byVersion) for (const version of byVersion.keys()) if (!held.get(handler)?.has(version)) byVersion.delete(version);
+  }
+  dirty.clear();
+}
+
 async function sha256(bytes: Uint8Array): Promise<string> {
   // `slice` copies onto a plain ArrayBuffer: digest refuses a view that may be shared memory.
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes.slice()));
@@ -85,6 +118,14 @@ export async function openSession(options: {
   const watch = host.watch(locations => void serialize(() => absorb(locations)).catch(error => Promise.reject(error)));
   let queue: Promise<unknown> = Promise.resolve();
   let closed = false;
+  function* holds() {
+    for (const node of nodes.values()) {
+      if (node.state !== "analysed") continue;
+      const handler = handlers.find(h => h.claims(node.key));
+      if (handler) yield [handler, node.version] as const;
+    }
+  }
+  open.add(holds);
 
   /**
    * Runs session work one piece at a time, so a change batch never interleaves with another.
@@ -104,6 +145,7 @@ export async function openSession(options: {
         links: [...nodes.values()].flatMap(node => node.links.map(l => ({ link: l, target: l.target, probes: l.probes }))),
       };
       let change: Change | void;
+      busy++;
       try {
         change = await work();
       } catch (error) {
@@ -117,6 +159,10 @@ export async function openSession(options: {
         roots.clear();
         for (const key of before.roots) roots.add(key);
         throw error;
+      } finally {
+        // After a rollback has restored the nodes, so the versions it went back to are still held.
+        busy--;
+        sweep(handlers);
       }
       if (change) emit(change);
     });
@@ -450,12 +496,19 @@ export async function openSession(options: {
       closed = true;
       watch.close();
       listeners.clear();
+      open.delete(holds);
+      sweep(handlers);
     },
   };
 
-  await serialize(async () => {
-    roots.add(await keyFor(options.entry));
-    await settle();
-  });
+  try {
+    await serialize(async () => {
+      roots.add(await keyFor(options.entry));
+      await settle();
+    });
+  } catch (error) {
+    session.close(); // nobody can close a session that never opened, and it would hold its finds forever
+    throw error;
+  }
   return session;
 }

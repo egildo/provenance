@@ -209,3 +209,28 @@ test("a listener that throws does not stop the others from hearing the change", 
   await assert.rejects(session.addRoot("/ok.md"), /listener broke/);
   assert.equal(heard, 1);
 });
+
+test("case 6: a rolled-back batch leaves the session holding the version it went back to", async () => {
+  let calls = 0;
+  const handler: Handler = {
+    claims: throwing.claims,
+    analyze(text) {
+      calls++;
+      return throwing.analyze(text);
+    },
+  };
+  const host = createMemoryHost({ "/a.md": '@include{src="b.md"}\n@include{src="c.md"}\n', "/b.md": "one\n", "/c.md": "fine\n" });
+  const session = await openSession({ host, entry: "/a.md", handlers: [handler] });
+  assert.equal(calls, 3); // a.md, b.md, c.md
+  const seen = await unhandled(async () => {
+    host.write("/b.md", "two\n"); // b.md moves to a new version first ...
+    host.write("/c.md", "BOOM\n"); // ... then c.md throws, and the batch is rolled back
+    await tick();
+  });
+  assert.equal(seen.length, 1);
+  assert.equal(calls, 5); // b.md's v2, and the throwing analysis of c.md
+  host.write("/b.md", "one\n"); // meeting v1 again: the rollback restored the hold on it
+  await absorbed(session, "/a.md");
+  assert.equal(calls, 5);
+  session.close();
+});
