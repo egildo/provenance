@@ -12,9 +12,12 @@ import type {
   ReadPass,
   RenderManifest,
   Resolver,
+  Preview,
   Session,
   SessionHost,
   Source,
+  StagedEdit,
+  StageResult,
   Writer,
 } from "./index.ts";
 
@@ -37,6 +40,50 @@ type State =
   | { state: "external" };
 
 type Node = State & { readonly id: string; readonly key: string; links: Link[] };
+
+/** One staged edit as held: the splice, and what finds it again. */
+interface Staged {
+  path: string;
+  value: unknown;
+  start: number;
+  end: number;
+  bytes: Uint8Array;
+  status: "staged" | "overrides";
+  disk?: Uint8Array;
+}
+
+/** The staged edits of one source, all against its base version. */
+interface Staging {
+  readonly writer: Writer;
+  version: string;
+  base: Uint8Array;
+  edits: Staged[];
+  /** The version of the last preview analysed, held while these edits stay as they are. */
+  preview?: string;
+}
+
+const overlaps = (a: { start: number; end: number }, b: { start: number; end: number }) =>
+  (a.start < b.end && b.start < a.end) || (a.start === a.end && b.start === b.end && a.start === b.start);
+
+/** A writer's range outside the bytes it was given is its bug, like an index `byteOffsets` cannot convert. */
+function checkRange(length: number, start: number, end: number, what: string) {
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end > length) {
+    throw new RangeError(`${what} gave the range ${start}-${end}, outside the ${length} bytes it was given`);
+  }
+}
+
+/** The base with every edit spliced in, applied from the end backwards so each range stays valid. */
+function splice(base: Uint8Array, edits: readonly Staged[]): Uint8Array {
+  let out = base;
+  for (const e of [...edits].sort((a, b) => b.start - a.start || b.end - a.end)) {
+    const next = new Uint8Array(e.start + e.bytes.length + (out.length - e.end));
+    next.set(out.subarray(0, e.start));
+    next.set(e.bytes, e.start);
+    next.set(out.subarray(e.end), e.start + e.bytes.length);
+    out = next;
+  }
+  return out;
+}
 
 /** Findings per handler and version, shared by every session that uses the handler. */
 const cache = new WeakMap<Handler, Map<string, Findings>>();
@@ -119,8 +166,14 @@ export async function openSession(options: {
   let closed = false;
   /** What the running piece of work has analysed or read from the cache; released when it ends. */
   const inFlight: (readonly [Handler, string])[] = [];
+  /** The staged edits, by the source's key. A preview of them is a version like any other. */
+  const staged = new Map<string, Staging>();
   function* holds() {
     yield* inFlight;
+    for (const [key, staging] of staged) {
+      const handler = staging.preview === undefined ? undefined : handlers.find(h => h.claims(key));
+      if (handler && staging.preview !== undefined) yield [handler, staging.preview] as const;
+    }
     for (const node of nodes.values()) {
       if (node.state !== "analysed") continue;
       const handler = handlers.find(h => h.claims(node.key));
@@ -143,6 +196,7 @@ export async function openSession(options: {
         nodes: new Map(nodes),
         roots: new Set(roots),
         passRoots: new Map(passRoots),
+        staged: new Map([...staged].map(([key, staging]) => [key, { ...staging, edits: staging.edits.map(e => ({ ...e })) }])),
         // Links are mutated in place when the world changes under them.
         links: [...nodes.values()].flatMap(node => node.links.map(l => ({ link: l, target: l.target, probes: l.probes }))),
       };
@@ -157,6 +211,7 @@ export async function openSession(options: {
         restore(ids, before.ids);
         restore(nodes, before.nodes);
         restore(passRoots, before.passRoots);
+        restore(staged, before.staged);
         roots.clear();
         for (const key of before.roots) roots.add(key);
         throw error;
@@ -208,6 +263,16 @@ export async function openSession(options: {
     return base.endsWith("/") ? resolved : host.paths.dirname(resolved);
   }
 
+  /** The handler's findings for one version, from the cache or made now; held until the piece of work ends. */
+  function findingsFor(handler: Handler, version: string, text: string): Findings {
+    let byVersion = cache.get(handler);
+    if (!byVersion) cache.set(handler, (byVersion = new Map()));
+    let findings = byVersion.get(version);
+    if (!findings) byVersion.set(version, (findings = handler.analyze(text)));
+    inFlight.push([handler, version]);
+    return findings;
+  }
+
   /** Reads, hashes and analyses one source. Never throws for the state of the world. */
   async function load(key: string, external: boolean): Promise<Node> {
     const id = idFor(key);
@@ -223,11 +288,7 @@ export async function openSession(options: {
     } catch {
       return { id, key, state: "undecodable", version, links: [] };
     }
-    let byVersion = cache.get(handler);
-    if (!byVersion) cache.set(handler, (byVersion = new Map()));
-    let findings = byVersion.get(version);
-    if (!findings) byVersion.set(version, (findings = handler.analyze(text)));
-    inFlight.push([handler, version]);
+    const findings = findingsFor(handler, version, text);
 
     const indices = findings.requests.flatMap(r => [r.start, r.end]);
     const offsets = byteOffsets(text, indices);
@@ -469,6 +530,37 @@ export async function openSession(options: {
     };
   }
 
+  async function stageEdit(location: string, path: string, value: unknown): Promise<StageResult> {
+    const key = await keyFor(location);
+    const node = nodes.get(key);
+    if (!node) return { ok: false, reason: "not a source in the session's graph" };
+    if (node.state === "external") return { ok: false, reason: `${key} is external, and cannot be edited` };
+    if (node.state === "refused") return { ok: false, reason: `${key} could not be read: ${node.reason}` };
+    const writer = writers.find(w => w.claims(key));
+    if (!writer) return { ok: false, reason: `no writer claims ${key}` };
+    let staging = staged.get(key);
+    let base = staging?.base;
+    if (!base) {
+      const read = await host.read(key);
+      if (!read.ok) return { ok: false, reason: read.reason };
+      if ((await sha256(read.bytes)) !== node.version) return { ok: false, reason: `${key} changed on disk since the session last read it` };
+      base = read.bytes;
+    }
+    const written = writer.write(base, path, value);
+    if (!written.ok) return { ok: false, reason: written.reason };
+    const { start, end, bytes } = written.edit;
+    checkRange(base.length, start, end, "the writer");
+    const clash = (staging?.edits ?? []).find(e => e.path !== path && overlaps(e, written.edit));
+    if (clash) return { ok: false, reason: `the edit overlaps the staged edit at ${clash.path}` };
+    if (!staging) staged.set(key, (staging = { writer, version: node.version, base, edits: [] }));
+    const edit: Staged = { path, value, start, end, bytes, status: "staged" };
+    const at = staging.edits.findIndex(e => e.path === path);
+    if (at < 0) staging.edits.push(edit);
+    else staging.edits[at] = edit;
+    staging.preview = undefined;
+    return { ok: true };
+  }
+
   const session: Session = {
     read,
     sources: () => [...nodes.values()].map(view),
@@ -493,6 +585,59 @@ export async function openSession(options: {
     onChange(listener) {
       listeners.add(listener);
       return () => void listeners.delete(listener);
+    },
+    stage(location, path, value) {
+      let result: StageResult = { ok: false, reason: "the session is closed" };
+      return serialize(async () => void (result = await stageEdit(location, path, value))).then(() => result);
+    },
+    index: () =>
+      [...staged].flatMap(([key, staging]) =>
+        staging.edits.map(
+          (e): StagedEdit => ({
+            source: idFor(key),
+            path: e.path,
+            value: e.value,
+            base: staging.version,
+            start: e.start,
+            end: e.end,
+            status: e.status,
+            ...(e.disk === undefined ? {} : { disk: e.disk }),
+          }),
+        ),
+      ),
+    unstage: (location, path) =>
+      serialize(async () => {
+        const key = await keyFor(location);
+        const staging = staged.get(key);
+        if (!staging) return;
+        if (path === undefined) staged.delete(key);
+        else {
+          staging.edits = staging.edits.filter(e => e.path !== path);
+          staging.preview = undefined;
+          if (staging.edits.length === 0) staged.delete(key);
+        }
+      }),
+    preview(id) {
+      let result: Preview | undefined;
+      return serialize(async () => {
+        const node = nodeById(id);
+        const staging = node && staged.get(node.key);
+        if (!node || !staging) return;
+        const bytes = splice(staging.base, staging.edits);
+        const version = await sha256(bytes);
+        const handler = handlers.find(h => h.claims(node.key));
+        let text: string | undefined;
+        try {
+          text = decoder.decode(bytes);
+        } catch {
+          text = undefined;
+        }
+        if (handler && text !== undefined) {
+          findingsFor(handler, version, text);
+          staging.preview = version;
+        }
+        result = { bytes, version };
+      }).then(() => result);
     },
     close() {
       closed = true;

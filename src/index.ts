@@ -15,7 +15,41 @@ export interface Session {
   addRoot(location: string): Promise<void>;
   removeRoot(location: string): Promise<void>;
   onChange(listener: (change: Change) => void): () => void;
+  /**
+   * Stages a set edit of the value at `path` in the source at `location` (specs/editing/spec.md).
+   * A new edit at a path that already has one replaces it. Refusals resolve; a writer bug throws.
+   */
+  stage(location: string, path: string, value: unknown): Promise<StageResult>;
+  /** The staged edits, source by source, each against its source's base version. */
+  index(): readonly StagedEdit[];
+  /** Drops the staged edit at `path`, or every staged edit of the source. */
+  unstage(location: string, path?: string): Promise<void>;
+  /** The source's base with every staged edit spliced in, or `undefined` when none is staged. */
+  preview(id: string): Promise<Preview | undefined>;
   close(): void;
+}
+
+export type StageResult = { readonly ok: true } | { readonly ok: false; readonly reason: string };
+
+/** One staged edit: a byte address in its source's base version, and the semantic address that finds it again. */
+export interface StagedEdit {
+  readonly source: string;
+  readonly path: string;
+  readonly value: unknown;
+  /** The base version the byte address is against. */
+  readonly base: string;
+  readonly start: number;
+  readonly end: number;
+  /** `"overrides"`: a rebase found the value changed on disk, and this edit will replace it. */
+  readonly status: "staged" | "overrides";
+  /** The bytes of the value on disk that an overriding edit will replace. */
+  readonly disk?: Uint8Array;
+}
+
+/** A source's base plus its staged edits, with the content hash that names it as a version. */
+export interface Preview {
+  readonly bytes: Uint8Array;
+  readonly version: string;
 }
 
 /** One render's reads through the session. */
