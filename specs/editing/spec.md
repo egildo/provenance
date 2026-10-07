@@ -46,6 +46,8 @@ way the `include` handler tests the kernel. The real YAML and JSON plug-in is Ca
   refusal, an unknown source) resolve as `{ ok: false, reason }`, never throw. Staging at a path that
   already has a staged edit **replaces** it (the glossary's base version: never an edit against
   another edit's result).
+  *Amended after the first build: staging never refuses because the disk moved since the session
+  last read it. The edit is staged against the base the session holds, and the rebase moves it.*
 - **FR-005** `session.index()` lists the staged edits: source id, path, value, base version, start,
   end, and status — `"staged"` or `"overrides"` (FR-008). `session.unstage(location, path?)` drops
   one edit, or every edit of a source.
@@ -64,7 +66,8 @@ way the `include` handler tests the kernel. The real YAML and JSON plug-in is Ca
 - **FR-008** **Rebase.** When the host reports a new version of a source with staged edits, each
   edit asks its writer to `locate` its path in the new bytes:
   - found, and the bytes there equal the bytes at the edit's range in its old base → the edit moves
-    (new range, new base), status `"staged"`;
+    (new range, new base), status `"staged"`; its replacement bytes are **written again** by the
+    writer on the new bytes, never reused, because a value's spelling can depend on its neighbours;
   - found, and the bytes differ → the value changed on disk; the edit moves and its status becomes
     `"overrides"`, carrying the disk's bytes so the embedder can say what will be overwritten;
   - gone → the edit is **conflicted**: dropped from the index and reported.

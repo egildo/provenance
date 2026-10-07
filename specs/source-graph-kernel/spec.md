@@ -233,7 +233,9 @@ host imports a platform module.
   an unhandled rejection; the session stays at the last state whose work succeeded, and the
   escaping error is what says so. Rollback covers the session's own work only: a change listener
   runs after that work is kept, and its throw rejects the call (or escapes) without undoing it;
-  every other listener is still told, and the first throw is the one raised.
+  every other listener is still told, and the first throw is the one raised. A write to disk cannot be
+  rolled back, so a commit's successful writes are kept: a throw after a file is written rejects the
+  call and leaves that file committed — its edits out of the index, the written version its base.
 
 **Caching and change**
 
