@@ -133,8 +133,8 @@ interface SourceCommit {
 }
 ```
 
-`stage` refuses (resolves `{ ok: false }`) a location outside the graph, one no writer claims, one
-whose disk has moved past what the session last read, the writer's own refusal, and an edit whose
+`stage` refuses (resolves `{ ok: false }`) a location outside the graph, one no writer claims, the
+writer's own refusal, and an edit whose
 range overlaps another staged edit's. A writer's range outside the bytes it was given throws a
 `RangeError`. `commit` is not atomic across files: its report says what landed.
 

@@ -138,3 +138,45 @@ below is what shows they can fail.
   which law a case tests, which several do not.
 - `specs/source-graph-kernel/spec.md`, `broken-is-reported-not-thrown`: add writers (10), and say
   what a commit that throws after writing leaves (13).
+
+## Round 2: a commit's writes are kept, rebase writes again, staging never refuses a moved disk
+
+Tests 140 before, 141 after (the two tests that pinned the old behaviour were replaced, below).
+
+1. **A commit's writes survive a throw.** `commitSource` records each key it has written; when the
+   piece throws, after the rollback restores everything, those keys' edits are removed from the
+   index. Sources not yet written stay staged, as before. Test: three sources, a handler that
+   throws on the second one's written text; the first and second are on disk with their edits out
+   of the index, the third is untouched and still staged, and a second commit writes only the
+   third and reports nothing overrode. **Deliberately replaced:** my round-1 test "a handler that
+   throws on the written text rejects the commit; the session is rolled back though the file is
+   written" pinned the opposite.
+2. **A rebase writes the value again.** On every move the writer's `write` is called on the new
+   bytes for the edit's path and value, and its range and bytes are the edit's; `locate` still
+   decides "gone". A `write` that refuses on the new bytes drops the edit as `conflicted`. Test: a
+   writer that quotes a value when the previous line ends with a comma; the neighbour gains a comma
+   on disk, the edit moves to 7-8 and is spelled `"3"`.
+3. **Staging never refuses a moved disk.** The refusal and its read are gone; the base is the bytes
+   of the version the session holds. To have those bytes, a `Node` now keeps `bytes` for every
+   source a writer claims, for the life of the session (it was: only while edits were staged). That
+   is a memory cost proportional to the writer-claimed sources, and it supersedes finding 18.
+   **Deliberately replaced:** the round-1 test "a disk the session has not absorbed yet cannot be
+   staged against" now asserts the opposite: the edit is staged at 6-7 against the old base, and
+   the absorbed change moves it to 13-14.
+
+**Sabotage** (backed up, marked, restored): keep the rollback restoring a written source's edits:
+the commit-throws test, alone. Reuse the old replacement bytes on a rebase: the neighbour-spelling
+test, alone. Reinstate the refusal: the moved-disk staging test, alone.
+
+**Still wrong or silent.**
+- The kernel rule says a throw after a write leaves the file committed with "the written version
+  its base". The node of that file cannot be re-analysed (that is what threw), so it stays at the
+  old version, with the old `bytes`, until the host reports the change. The session catches up
+  through the host's change report; a host that does not report its own writes leaves it stale. The
+  same holds for an earlier source of the same commit whose reload had succeeded: the rollback
+  restores its old node too. No `Change` is emitted for those writes on that path. If "base"
+  should be literal, the session needs a way to hold a version it could not analyse.
+- A rebase whose edit keeps its range but whose re-written bytes differ (a neighbour changed
+  spelling without moving anything) is silent: no `moved` notice, since nothing moved. FR-008 says
+  "nothing silent".
+- `contracts/public-api.md` still listed the moved-disk refusal; I removed that clause.

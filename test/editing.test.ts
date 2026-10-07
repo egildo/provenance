@@ -66,12 +66,16 @@ test("a source the host refused cannot be staged", async () => {
   session.close();
 });
 
-test("a disk the session has not absorbed yet cannot be staged against", async () => {
+// Deliberately changed in round 2 (it used to pin a refusal): staging never refuses because the disk moved.
+test("a disk the session has not absorbed yet is staged against anyway, and the rebase moves the edit", async () => {
   const { session, memory } = await open();
   memory.write("/w.conf", "# note\na=1\nb=2\n");
-  const result = await session.stage("/w.conf", "b", "3"); // the change event is still in flight
-  assert.equal(result.ok, false);
-  assert.match(result.ok ? "" : result.reason, /changed on disk/);
+  assert.deepEqual(await session.stage("/w.conf", "b", "3"), { ok: true }); // the change event is still in flight
+  assert.deepEqual(session.index().map(e => [e.start, e.end, e.base]), [[6, 7, sha(bytes(W))]]); // against the base the session holds
+  await absorbed(session, "/w.conf");
+  assert.deepEqual(session.index().map(e => [e.start, e.end, e.base]), [[13, 14, sha(bytes("# note\na=1\nb=2\n"))]]);
+  await session.commit();
+  assert.equal(await read(memory, "/w.conf"), "# note\na=1\nb=3\n");
   session.close();
 });
 
@@ -551,7 +555,9 @@ test("a throw while committing rejects the call and leaves the index and the dis
   session.close();
 });
 
-test("a handler that throws on the written text rejects the commit; the session is rolled back though the file is written", async () => {
+// Round 2: a disk write cannot be rolled back, so a commit's writes are kept after a throw (it used to
+// restore the edits of a file that was already written).
+test("a handler that throws on the written text rejects the commit, and the file stays committed", async () => {
   const throwing: Handler = {
     claims: location => location.endsWith(".conf"),
     analyze(source) {
@@ -559,13 +565,51 @@ test("a handler that throws on the written text rejects the commit; the session 
       return { requests: [] };
     },
   };
-  const memory = createMemoryHost({ "/w.conf": W });
-  const host: Host = { ...memory, watch: () => ({ set: () => undefined, close: () => undefined }) };
-  const session = await openOn(host, { handlers: [throwing] });
+  const memory = createMemoryHost({ "/w.conf": W, "/v.conf": "a=1\n", "/u.conf": "a=1\n" });
+  const { host, writes } = spied(memory);
+  const quiet: Host = { ...host, watch: () => ({ set: () => undefined, close: () => undefined }) };
+  const session = await openOn(quiet, { handlers: [throwing] });
+  await session.addRoot("/v.conf");
+  await session.addRoot("/u.conf");
+  await session.stage("/v.conf", "a", "2");
   await session.stage("/w.conf", "b", "BOOM");
+  await session.stage("/u.conf", "a", "3"); // after the throwing one: never reached
   await assert.rejects(session.commit(), /handler broke/);
-  // The kernel's rule: a failed call leaves the session as it was. The write itself cannot be taken back.
+  assert.equal(await read(memory, "/v.conf"), "a=2\n");
   assert.equal(await read(memory, "/w.conf"), "a=1\nb=BOOM\n");
-  assert.deepEqual(session.index().map(e => [e.path, e.start, e.end]), [["b", 6, 7]]);
+  assert.equal(await read(memory, "/u.conf"), "a=1\n");
+  // The written sources' edits are out of the index; the one never reached is still staged.
+  assert.deepEqual(session.index().map(e => [e.path, e.value]), [["a", "3"]]);
+  // A second commit writes only that one, and nothing is reported as overridden.
+  writes.length = 0;
+  const report = await session.commit();
+  assert.deepEqual(writes, [["/u.conf", "a=3\n"]]);
+  assert.deepEqual(report.sources.map(r => [r.location, r.outcome, r.edits.map(e => e.outcome)]), [["/u.conf", "written", ["written"]]]);
+  session.close();
+});
+
+// Round 2: a rebase writes the value again on the new bytes.
+test("a rebase writes the value again, because its spelling can depend on its neighbours", async () => {
+  // A test writer that quotes a value when the previous line ends with a comma.
+  const quoting: Writer = {
+    ...keyValue,
+    write(data, path, value) {
+      const found = keyValue.locate(data, path);
+      if (!found.ok) return found;
+      const lines = text(data.slice(0, found.start)).split("\n");
+      const quoted = (lines[lines.length - 2] ?? "").endsWith(",");
+      return { ok: true, edit: { start: found.start, end: found.end, bytes: bytes(quoted ? `"${String(value)}"` : String(value)) } };
+    },
+  };
+  const memory = createMemoryHost({ "/w.conf": W });
+  const session = await openSession({ host: memory, entry: "/w.conf", handlers: [], writers: [quoting], writable: ["/"] });
+  await session.stage("/w.conf", "b", "3");
+  assert.equal(text((await session.preview(idOf(session, "/w.conf")))?.bytes ?? new Uint8Array()), "a=1\nb=3\n");
+  memory.write("/w.conf", "a=1,\nb=2\n"); // "a=1,⏎" is 5 bytes, so b's value moves to 7-8, and its neighbour now ends with a comma
+  await absorbed(session, "/w.conf");
+  assert.deepEqual(session.index().map(e => [e.start, e.end]), [[7, 8]]);
+  assert.equal(text((await session.preview(idOf(session, "/w.conf")))?.bytes ?? new Uint8Array()), 'a=1,\nb="3"\n');
+  await session.commit();
+  assert.equal(await read(memory, "/w.conf"), 'a=1,\nb="3"\n');
   session.close();
 });

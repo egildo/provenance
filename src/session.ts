@@ -42,7 +42,7 @@ type State =
   | { state: "refused"; reason: string }
   | { state: "external" };
 
-/** `bytes` are kept only for a source with staged edits, so a rebase can read what the version holds. */
+/** `bytes` are kept for a source a writer claims, so an edit can be staged against, and rebased from, the version the session holds. */
 type Node = State & { readonly id: string; readonly key: string; links: Link[]; readonly bytes?: Uint8Array };
 
 /** One staged edit as held: the splice, and what finds it again. */
@@ -206,6 +206,7 @@ export async function openSession(options: {
       };
       let change: Change | void;
       notices.length = 0;
+      writtenKeys.length = 0;
       try {
         change = await work();
       } catch (error) {
@@ -218,6 +219,8 @@ export async function openSession(options: {
         restore(passRoots, before.passRoots);
         restore(staged, before.staged);
         notices.length = 0;
+        for (const key of writtenKeys) staged.delete(key); // their edits are on disk; the host's change report brings the session up to them
+        writtenKeys.length = 0;
         roots.clear();
         for (const key of before.roots) roots.add(key);
         throw error;
@@ -281,6 +284,8 @@ export async function openSession(options: {
 
   /** What rebases did to staged edits during the running piece of work, for the change it reports. */
   const notices: EditNotice[] = [];
+  /** Sources the running commit has written. A disk write cannot be rolled back, so they stay committed. */
+  const writtenKeys: string[] = [];
   const drained = (): { edits?: readonly EditNotice[] } => {
     const edits = notices.splice(0);
     return edits.length === 0 ? {} : { edits };
@@ -305,15 +310,23 @@ export async function openSession(options: {
         continue;
       }
       checkRange(bytes.length, found.start, found.end, "the writer");
-      const now = bytes.slice(found.start, found.end);
+      // The value is written again on the new bytes: its spelling can depend on its neighbours.
+      const again = staging.writer.write(bytes, e.path, e.value);
+      if (!again.ok) {
+        notices.push({ source, path: e.path, outcome: "conflicted" });
+        continue;
+      }
+      const { start, end } = again.edit;
+      checkRange(bytes.length, start, end, "the writer");
+      const now = bytes.slice(start, end);
       const was = staging.base.subarray(e.start, e.end);
       const same = now.length === was.length && now.every((byte, i) => byte === was[i]);
-      const moved = found.start !== e.start || found.end !== e.end;
+      const moved = start !== e.start || end !== e.end;
       const status = same ? e.status : "overrides";
       const disk = same ? e.disk : now;
-      kept.push({ path: e.path, value: e.value, bytes: e.bytes, start: found.start, end: found.end, status, ...(disk === undefined ? {} : { disk }) });
-      if (!same) notices.push({ source, path: e.path, outcome: "overrides", start: found.start, end: found.end, disk: now });
-      else if (moved) notices.push({ source, path: e.path, outcome: "moved", start: found.start, end: found.end });
+      kept.push({ path: e.path, value: e.value, bytes: again.edit.bytes, start, end, status, ...(disk === undefined ? {} : { disk }) });
+      if (!same) notices.push({ source, path: e.path, outcome: "overrides", start, end, disk: now });
+      else if (moved) notices.push({ source, path: e.path, outcome: "moved", start, end });
     }
     staging.edits = kept;
     staging.base = bytes;
@@ -339,7 +352,7 @@ export async function openSession(options: {
     if (!read.ok) return { id, key, state: "refused", reason: read.reason, links: [] };
     const version = await sha256(read.bytes);
     const handler = handlers.find(h => h.claims(key));
-    const kept = staged.has(key) ? { bytes: read.bytes } : {};
+    const kept = writers.some(w => w.claims(key)) ? { bytes: read.bytes } : {};
     if (!handler) return { id, key, state: "leaf", version, links: [], ...kept };
     let text: string;
     try {
@@ -603,13 +616,10 @@ export async function openSession(options: {
     const writer = writers.find(w => w.claims(key));
     if (!writer) return { ok: false, reason: `no writer claims ${key}` };
     let staging = staged.get(key);
-    let base = staging?.base;
-    if (!base) {
-      const read = await host.read(key);
-      if (!read.ok) return { ok: false, reason: read.reason };
-      if ((await sha256(read.bytes)) !== node.version) return { ok: false, reason: `${key} changed on disk since the session last read it` };
-      base = read.bytes;
-    }
+    // The base the session holds: the bytes of the version it last took in. A disk that has moved
+    // since is the rebase's business, when the host reports it.
+    const base = staging?.base ?? ("bytes" in node ? node.bytes : undefined);
+    if (!base) return { ok: false, reason: `${key} was not read` };
     const written = writer.write(base, path, value);
     if (!written.ok) return { ok: false, reason: written.reason };
     const { start, end, bytes } = written.edit;
@@ -656,6 +666,7 @@ export async function openSession(options: {
     if (!written.ok) return nothing("failed", written.reason);
     for (const e of remaining.edits) edits.push(e.status === "overrides" && e.disk ? { path: e.path, outcome: "overrode", disk: e.disk } : { path: e.path, outcome: "written" });
     staged.delete(key);
+    writtenKeys.push(key);
     const fresh = await load(key, false);
     if (versionOf(fresh) !== versionOf(nodes.get(key))) changed.push(key);
     nodes.set(key, fresh);
