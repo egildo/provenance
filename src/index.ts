@@ -99,6 +99,20 @@ export interface Change {
   readonly added: readonly string[];
   readonly removed: readonly string[];
   readonly changed: readonly string[];
+  /** What a rebase did to staged edits because their source changed; absent when it did nothing. */
+  readonly edits?: readonly EditNotice[];
+}
+
+/** One staged edit that a rebase moved, found overriding a newer value, or dropped as conflicted. */
+export interface EditNotice {
+  readonly source: string;
+  readonly path: string;
+  readonly outcome: "moved" | "overrides" | "conflicted";
+  /** The edit's new byte range in the source's new version; absent when conflicted. */
+  readonly start?: number;
+  readonly end?: number;
+  /** The bytes on disk that an overriding edit will replace. */
+  readonly disk?: Uint8Array;
 }
 
 export interface Handler {

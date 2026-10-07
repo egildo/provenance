@@ -67,3 +67,19 @@ export const keyValue: Writer = {
       : found;
   },
 };
+
+/** Runs `action` and returns what escaped it as an unhandled rejection (the runner's own listener stands aside). */
+export async function unhandled(action: () => Promise<void>): Promise<unknown[]> {
+  const saved = process.listeners("unhandledRejection");
+  process.removeAllListeners("unhandledRejection");
+  const seen: unknown[] = [];
+  process.on("unhandledRejection", reason => void seen.push(reason));
+  try {
+    await action();
+    await new Promise(resolve => setTimeout(resolve, 20));
+  } finally {
+    process.removeAllListeners("unhandledRejection");
+    for (const listener of saved) process.on("unhandledRejection", listener);
+  }
+  return seen;
+}

@@ -6,6 +6,7 @@ import { hasScheme, resolve } from "./resolvers.ts";
 import type {
   Change,
   Edge,
+  EditNotice,
   Findings,
   Handler,
   Host,
@@ -39,7 +40,8 @@ type State =
   | { state: "refused"; reason: string }
   | { state: "external" };
 
-type Node = State & { readonly id: string; readonly key: string; links: Link[] };
+/** `bytes` are kept only for a source with staged edits, so a rebase can read what the version holds. */
+type Node = State & { readonly id: string; readonly key: string; links: Link[]; readonly bytes?: Uint8Array };
 
 /** One staged edit as held: the splice, and what finds it again. */
 interface Staged {
@@ -201,6 +203,7 @@ export async function openSession(options: {
         links: [...nodes.values()].flatMap(node => node.links.map(l => ({ link: l, target: l.target, probes: l.probes }))),
       };
       let change: Change | void;
+      notices.length = 0;
       try {
         change = await work();
       } catch (error) {
@@ -212,6 +215,7 @@ export async function openSession(options: {
         restore(nodes, before.nodes);
         restore(passRoots, before.passRoots);
         restore(staged, before.staged);
+        notices.length = 0;
         roots.clear();
         for (const key of before.roots) roots.add(key);
         throw error;
@@ -273,6 +277,58 @@ export async function openSession(options: {
     return findings;
   }
 
+  /** What rebases did to staged edits during the running piece of work, for the change it reports. */
+  const notices: EditNotice[] = [];
+  const drained = (): { edits?: readonly EditNotice[] } => {
+    const edits = notices.splice(0);
+    return edits.length === 0 ? {} : { edits };
+  };
+
+  /** Every staged edit of a source whose target is gone is conflicted: dropped, and reported. */
+  function conflict(key: string) {
+    const staging = staged.get(key);
+    if (!staging) return;
+    staged.delete(key);
+    for (const e of staging.edits) notices.push({ source: idFor(key), path: e.path, outcome: "conflicted" });
+  }
+
+  /** Moves a source's staged edits onto `bytes`, its new version, finding each by its path (FR-008). */
+  function rebase(key: string, staging: Staging, bytes: Uint8Array, version: string) {
+    const source = idFor(key);
+    const kept: Staged[] = [];
+    for (const e of staging.edits) {
+      const found = staging.writer.locate(bytes, e.path);
+      if (!found.ok) {
+        notices.push({ source, path: e.path, outcome: "conflicted" });
+        continue;
+      }
+      checkRange(bytes.length, found.start, found.end, "the writer");
+      const now = bytes.slice(found.start, found.end);
+      const was = staging.base.subarray(e.start, e.end);
+      const same = now.length === was.length && now.every((byte, i) => byte === was[i]);
+      const moved = found.start !== e.start || found.end !== e.end;
+      const status = same ? e.status : "overrides";
+      const disk = same ? e.disk : now;
+      kept.push({ path: e.path, value: e.value, bytes: e.bytes, start: found.start, end: found.end, status, ...(disk === undefined ? {} : { disk }) });
+      if (!same) notices.push({ source, path: e.path, outcome: "overrides", start: found.start, end: found.end, disk: now });
+      else if (moved) notices.push({ source, path: e.path, outcome: "moved", start: found.start, end: found.end });
+    }
+    staging.edits = kept;
+    staging.base = bytes;
+    staging.version = version;
+    staging.preview = undefined;
+    if (kept.length === 0) staged.delete(key);
+  }
+
+  /** Takes a source's new version into the session, rebasing the edits staged against the old one. */
+  function adopt(key: string, fresh: Node) {
+    nodes.set(key, fresh);
+    const staging = staged.get(key);
+    if (!staging) return;
+    if (fresh.state === "refused" || fresh.state === "external" || fresh.bytes === undefined) conflict(key);
+    else rebase(key, staging, fresh.bytes, fresh.version);
+  }
+
   /** Reads, hashes and analyses one source. Never throws for the state of the world. */
   async function load(key: string, external: boolean): Promise<Node> {
     const id = idFor(key);
@@ -281,12 +337,13 @@ export async function openSession(options: {
     if (!read.ok) return { id, key, state: "refused", reason: read.reason, links: [] };
     const version = await sha256(read.bytes);
     const handler = handlers.find(h => h.claims(key));
-    if (!handler) return { id, key, state: "leaf", version, links: [] };
+    const kept = staged.has(key) ? { bytes: read.bytes } : {};
+    if (!handler) return { id, key, state: "leaf", version, links: [], ...kept };
     let text: string;
     try {
       text = decoder.decode(read.bytes);
     } catch {
-      return { id, key, state: "undecodable", version, links: [] };
+      return { id, key, state: "undecodable", version, links: [], ...kept };
     }
     const findings = findingsFor(handler, version, text);
 
@@ -298,7 +355,7 @@ export async function openSession(options: {
       const l: Link = { from: { start: offsets[2 * k], end: offsets[2 * k + 1] }, request: r.request, lookup: joined(r.request, findings.base), kind: r.kind, base, probes: [] };
       if (await link(l)) links.push(l);
     }
-    return { id, key, state: "analysed", version, links };
+    return { id, key, state: "analysed", version, links, ...kept };
   }
 
   /**
@@ -322,7 +379,10 @@ export async function openSession(options: {
       for (const l of node.links) if (l.target) worklist.push(l.target);
     }
     const removed = [...nodes.keys()].filter(key => !reachable.has(key));
-    for (const key of removed) nodes.delete(key);
+    for (const key of removed) {
+      nodes.delete(key);
+      conflict(key); // a source that left the graph has nowhere for its edits to land
+    }
     const watched = new Set<string>();
     for (const node of nodes.values()) {
       if (node.state !== "external") watched.add(node.key);
@@ -336,7 +396,7 @@ export async function openSession(options: {
 
   /** Tells every listener, each even if another throws; the first throw is then rethrown. */
   function emit(change: Change) {
-    if (change.added.length + change.removed.length + change.changed.length === 0) return;
+    if (change.added.length + change.removed.length + change.changed.length + (change.edits?.length ?? 0) === 0) return;
     const thrown: unknown[] = [];
     for (const listener of listeners) {
       try {
@@ -355,6 +415,7 @@ export async function openSession(options: {
       added: added.map(idFor),
       removed: removed.map(idFor),
       changed: changedKeys.filter(key => nodes.has(key)).map(idFor),
+      ...drained(),
     };
   }
 
@@ -369,7 +430,7 @@ export async function openSession(options: {
       if (touched.has(node.key) && node.state !== "external") {
         const fresh = await load(node.key, false);
         if (versionOf(fresh) !== versionOf(node)) {
-          nodes.set(node.key, fresh);
+          adopt(node.key, fresh);
           changed.push(node.key);
         }
       }
@@ -451,7 +512,7 @@ export async function openSession(options: {
       if (!node || versionOf(node) === version) continue;
       const fresh = await load(key, false);
       if (versionOf(fresh) !== versionOf(node)) {
-        nodes.set(key, fresh);
+        adopt(key, fresh);
         changed.push(key);
       }
     }
@@ -462,6 +523,7 @@ export async function openSession(options: {
       added: added.filter(key => !mismatched.includes(key)).map(idFor),
       removed: removed.map(idFor),
       changed: [...new Set([...changed, ...mismatched])].filter(key => nodes.has(key)).map(idFor),
+      ...drained(),
     };
   }
 
