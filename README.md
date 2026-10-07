@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.3.0-blue">
+  <img alt="version" src="https://img.shields.io/badge/version-0.4.0-blue">
   <img alt="node" src="https://img.shields.io/badge/node-%E2%89%A522-339933?logo=node.js&logoColor=white">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
   <img alt="status" src="https://img.shields.io/badge/status-kernel%20built-orange">

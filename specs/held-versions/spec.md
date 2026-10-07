@@ -50,7 +50,9 @@ what is reachable from its roots. The open sessions are the roots.
   another has just computed but not yet stored. A piece of work therefore also **holds** every
   version it has analysed or taken from the cache, until it ends. No sweep waits on another
   session: a first implementation that deferred every sweep until no session was working could
-  starve on a busy server and stop for good behind one host read that never returns.*
+  starve on a busy server and stop for good behind one host read that never returns. The
+  remaining cost is bounded and local: a piece of work that hangs holds only what it has met, for as
+  long as it hangs.*
 - **FR-003** Sessions share: two open sessions holding the same version use one finding, analysed
   once. Two sources in one session with identical bytes share one finding, as today
   (`test/change.test.ts`, "identical files share one analysis").

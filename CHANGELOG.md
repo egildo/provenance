@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0 — 2026-10-08
+
+A minor release because a kernel promise changes: the same bytes can now be analysed more than once ([spec](specs/held-versions/spec.md), [#3](https://github.com/egildo/provenance/issues/3)).
+
+- **Findings live while a session holds them.** The findings cache used to keep every version of every source for as long as its handler lived, so a server watching files for days grew without bound. A finding now lives while some open session holds that version — in its graph, or in a piece of work still running — and is dropped when the last piece of work that held it ends or its session closes. Two open sessions still share one analysis. Returning a file to a version nobody holds any more analyses it again.
+- **A failed `openSession` no longer leaks its file watcher.** It closes what it opened.
+- Nothing is added to the API; nothing an embedder calls evicts, pins or sizes the cache.
+
 ## 0.3.0 — 2026-10-06
 
 A minor release because two observable behaviours change ([spec](specs/offset-conversion/spec.md), [#3](https://github.com/egildo/provenance/issues/3)).
