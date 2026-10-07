@@ -1,6 +1,6 @@
 # Write-back
 
-*Design, 2026-10-08. Drafted on paper before any code, because drafting is where the defects show
+*Design, 2026-10-08; vocabulary aligned with the glossary the same day. Drafted on paper before any code, because drafting is where the defects show
 up cheaply. Nothing here is built. Terms are [the glossary's](glossary.md) unless defined below.*
 
 ## What this is for
@@ -21,11 +21,12 @@ the other half.
   made on an output travels back through its **stamp** — the source address the output element
   carries — to a source.
 - **Edit.** One change to one source, recorded with two addresses (below).
-- **Working copy.** A session's view of a source with its pending edits applied. The disk holds the
-  **base**; the working copy is what the user sees. (Jujutsu's working-copy-as-commit is the model.)
-- **Save.** Writing working copies to disk. Until then, nothing touches disk.
-- **Re-target.** Finding an edit's target again in a source whose bytes moved since the edit was
-  made, by its semantic address.
+- **Staged edit, index, preview, commit, rebase.** The glossary's editing terms, used here as
+  defined there: an edit is *staged* (held in the session's *index*, not yet written); the *preview*
+  is the base plus the index, what the user sees; *commit* writes it to disk; *rebase* moves staged
+  edits onto a source's new version. This design amends two of them — *rebase* finds an edit by its
+  semantic address, and a value changed on both sides is overridden rather than *conflicted* — see
+  the glossary. (Jujutsu's working-copy-as-commit is the model for the preview.)
 - **Format plug-in.** The one component that understands a format: it reads a source into a
   lossless positioned tree, locates a semantic path in it, and writes a value or a node in the
   source's own style.
@@ -47,7 +48,7 @@ Prior art: the Language Server Protocol's `WorkspaceEdit` — a list of `TextEdi
 text) against document versions, applied together, non-overlapping, every range referring to the
 original document. Two departures, both deliberate. Ranges are **bytes**, not UTF-16 positions, so
 nothing converts. And an LSP edit has no semantic half, so it dies the moment its document changes;
-this one is re-targeted instead.
+this one is rebased instead.
 
 ## Who does what
 
@@ -57,8 +58,8 @@ this one is re-targeted instead.
 - **The format plug-in** turns an intent at a path into bytes, in the source's style, and finds a
   path again in new bytes. For YAML and JSON that is Cascata's adapter; for CSS, PostCSS; for
   Markdown, Provenance's units.
-- **Provenance** holds pending edits, previews working copies, absorbs disk changes, re-targets
-  through the plug-in, and saves.
+- **Provenance** holds the index, builds previews, absorbs disk changes, rebases through the
+  plug-in, and commits.
 - **Cascata** additionally answers which layer an inherited configuration value came from
   (`why()`) — needed only once inherited values become editable (parked).
 
@@ -68,34 +69,34 @@ that can disagree about where its bytes are.
 ## The lifecycle of an edit
 
 1. **Stage.** The tool names a source, a path and an intent. The plug-in locates the path in the
-   base and produces the byte address. A new edit at a path that already has a pending edit
+   base and produces the byte address. A new edit at a path that already has a staged edit
    **replaces** it — edits are never stacked, because an edit expressed against another edit's
    result is forbidden (the LSP rule, already Provenance's).
-2. **Preview.** The working copy is the base with every pending edit spliced in, applied from the
-   end of the file backwards so earlier ranges stay valid. Re-reading the working copy is how a
+2. **Preview.** The preview is the base with every staged edit spliced in, applied from the
+   end of the file backwards so earlier ranges stay valid. Re-reading the preview is how a
    preview is validated: validation is re-analysis, never a verdict from the plug-in.
-3. **Absorb.** The disk changes under a source with pending edits. Each edit is re-targeted on the
-   new version by its semantic address; the working copy is rebuilt on the new base. Three
+3. **Rebase.** The disk changes under a source with staged edits. Each edit is found again on the
+   new version by its semantic address; the preview is rebuilt on the new base. Three
    outcomes, each reported, none silent:
    - the path is found and its value on disk is unchanged since the edit's base → the edit
      carries over;
    - the path is found but its value on disk changed → **the session's edit wins** (last saver
      wins, per value), and the session is told it is overriding a newer value;
    - the path is gone → the edit is dropped, and the session is told.
-4. **Save.** Each source's working copy is written if the disk still holds its base; if not, step 3
-   runs first. After saving, the written bytes are the new base.
+4. **Commit.** Each source's preview is written if the disk still holds its base; if not, step 3
+   runs first. Afterwards the written bytes are the new base and the index empties for that source.
 
 ## The laws
 
 Write-back is working when these hold. They are the conformance cases, written before the code.
 
-- **L1 — Nothing changed, nothing written.** Open, save with no edits: the disk is byte-identical.
-- **L2 — What you set is what you read.** Set a value, save, re-read: the value at that path is the
+- **L1 — Nothing changed, nothing written.** Open, commit with no edits: the disk is byte-identical.
+- **L2 — What you set is what you read.** Set a value, commit, re-read: the value at that path is the
   one set, *of the same kind* (see finding 1).
 - **L3 — Only the value moves.** Every byte outside the edit's range is identical: comments,
   indentation, quoting elsewhere, line endings, the byte-order mark.
 - **L4 — An edit survives what does not touch it.** A disk change elsewhere in the file, before the
-  save, does not lose the edit or move it to the wrong place.
+  commit, does not lose the edit or move it to the wrong place.
 - **L5 — Last saver wins, per value.** A disk change to the same value is overridden, and reported;
   a disk change to any other value is kept.
 
@@ -116,15 +117,15 @@ walls:
     height: 3.2
 ```
 
-1. **Set `/walls/W2/height` to 3.4.** Byte address: 47–50, `3.2` → `3.4`. Saved file: identical
+1. **Set `/walls/W2/height` to 3.4.** Byte address: 47–50, `3.2` → `3.4`. Committed file: identical
    except bytes 47–49. (L2, L3)
-2. **No edit, save.** 51 identical bytes. (L1)
-3. **A colleague adds a comment line above, then the session saves case 1's edit.** The disk now
+2. **No edit, commit.** 51 identical bytes. (L1)
+3. **A colleague adds a comment line above, then the session commits case 1's edit.** The disk now
    begins with `# from survey 2026-09` and a newline, 22 bytes; the base no longer matches.
-   Re-target `/walls/W2/height`: 69–72. Saved: the colleague's comment kept, `3.4` at 69–71. (L4)
-4. **A colleague sets W2's height to 3.6 on disk; the session's edit says 3.4.** Saved: 3.4, and
+   Rebase `/walls/W2/height`: 69–72. Committed: the colleague's comment kept, `3.4` at 69–71. (L4)
+4. **A colleague sets W2's height to 3.6 on disk; the session's edit says 3.4.** Committed: 3.4, and
    the session was told it overrode 3.6. (L5)
-5. **A colleague sets W1's height to 3.0; the session's edit is on W2.** Saved: W1 at 3.0, W2 at 3.4.
+5. **A colleague sets W1's height to 3.0; the session's edit is on W2.** Committed: W1 at 3.0, W2 at 3.4.
    (L5)
 6. **A colleague deletes W2.** The edit has nowhere to land: dropped, the session told. Nothing
    written for it.
@@ -177,8 +178,8 @@ case was written down.
 |---|---|
 | Outputs are never edited | Writing to a rendered or generated file |
 | Edits are splices | Regenerating a source from a tree; a printer touching bytes outside the edit |
-| Nothing touches disk before save | Any write outside save |
-| Edits keyed by path | Two pending edits at one path; an edit against another edit's result |
+| Nothing touches disk before commit | Any write outside commit |
+| Edits keyed by path | Two staged edits at one path; an edit against another edit's result |
 | One plug-in per format | Two parsers reporting positions in the same format |
 | Nothing silent | An override, a drop, or a refusal without a notice |
 
@@ -200,6 +201,6 @@ case was written down.
 
 ## The first build
 
-A walking skeleton: YAML values only (set, no insert or delete), one file, a session with pending
-edits, absorb with re-targeting, per-value last-saver-wins with its notice, save. On a small geometry
+A walking skeleton: YAML values only (set, no insert or delete), one file, a session with staged
+edits, rebase by semantic address, per-value last-saver-wins with its notice, commit. On a small geometry
 fixture. Proven when cases 1–10 pass as written above.

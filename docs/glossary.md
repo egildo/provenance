@@ -22,15 +22,15 @@ Written with a capital, Provenance is the library.
 
 **Candidate.** An edge kind: loading the source that asks does not guarantee loading the target. The runtime decides. A `srcset` entry, a media-conditioned `@import`, a lazy image, nearly every `url()` in a CSS rule. An unloaded candidate is normal.
 
-**Commit.** Writing every staged edit to disk together, after checking that each touched file still hashes to its base version. Afterwards the preview versions become the base versions and the index empties. Not a version-control commit; one may follow, and that is the consumer's call. *(editing)*
+**Commit.** Writing every staged edit to disk, one file at a time, each atomically. A file that no longer hashes to its base version is rebased first; a value changed on both sides is written as staged — the last to commit wins, per value — and reported. Afterwards the written versions become the base versions and the index empties. *Amended 2026-10-08 (`write-back.md`): it refused a file that had moved.* Not a version-control commit; one may follow, and that is the consumer's call. *(editing)*
 
-**Conflicted.** The state of a staged edit whose span could not be found, uniquely, in a source's new version after a rebase. It blocks its group until it is resolved or dropped. *(editing)*
+**Conflicted.** The state of a staged edit whose target is gone from a source's new version after a rebase. In the first version it is dropped and reported, never blocking. *Amended 2026-10-08: a value changed on both sides is no longer conflicted; the staged edit overrides it, with a notice.* *(editing)*
 
 **Declared.** An edge origin: the edge was found by a handler parsing a source.
 
 **Edge.** A dependency from a place in one source to another source: `from` (the address of the span that asks), `request` (as written), `target` (a source, or unresolved), `kind` (requires or candidate), and `origin` (declared or observed).
 
-**Edit.** A change staged against a source: either a text edit, which is an address in the base version plus the replacement bytes, or a file operation, which is create, delete or rename. *(editing)*
+**Edit.** A change staged against a source: either a text edit, which carries **two addresses** — an address in the base version plus the replacement bytes, and a semantic address (a path in the format's own terms, and the intended value) — or a file operation, which is create, delete or rename. *Amended 2026-10-08 (`write-back.md`): the semantic address.* *(editing)*
 
 **Findings.** What a handler returns for one source: its requests, its regions, and optionally a base against which its requests resolve (HTML's `<base href>`).
 
@@ -54,7 +54,7 @@ Written with a capital, Provenance is the library.
 
 **Probe.** A location a resolver tried while resolving a request, whether or not anything was there. A file appearing at a probe re-resolves the edge that probed it. Probes belong to the cached result of a resolution, and a cache hit re-registers them.
 
-**Rebase.** Moving staged edits onto a source's new version when the file changes on disk: each edit looks for its original span's bytes, with a little context, in the new version. A unique match moves it; anything else marks it conflicted. *(editing)*
+**Rebase.** Moving staged edits onto a source's new version when the file changes on disk: each edit asks the format plug-in to find its semantic address in the new version and to write its value there again. Found, it moves; gone, it is conflicted. *Amended 2026-10-08 (`write-back.md`): it searched for the old span's bytes with a little context, which fails exactly when the value itself changed.* *(editing)*
 
 **Reconciliation.** The query that matches declared edges against observed ones and names every disagreement. It can run at any time, because observation is a window rather than a moment. *(observation)*
 
