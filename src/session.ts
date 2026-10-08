@@ -299,7 +299,7 @@ export async function openSession(options: {
     const staging = staged.get(key);
     if (!staging) return;
     staged.delete(key);
-    for (const e of staging.edits) notices.push({ source: idFor(key), path: e.path, outcome: "conflicted" });
+    for (const e of staging.edits) notices.push({ source: idFor(key), path: e.path, outcome: "conflicted", reason: "gone" });
   }
 
   /** Moves a source's staged edits onto `bytes`, its new version, finding each by its path (FR-008). */
@@ -309,14 +309,14 @@ export async function openSession(options: {
     for (const e of staging.edits) {
       const found = staging.writer.locate(bytes, e.path);
       if (!found.ok) {
-        notices.push({ source, path: e.path, outcome: "conflicted" });
+        notices.push({ source, path: e.path, outcome: "conflicted", reason: "gone" });
         continue;
       }
       checkRange(bytes.length, found.start, found.end, "the writer");
       // The value is written again on the new bytes: its spelling can depend on its neighbours.
       const again = staging.writer.write(bytes, e.path, e.value);
       if (!again.ok) {
-        notices.push({ source, path: e.path, outcome: "conflicted" });
+        notices.push({ source, path: e.path, outcome: "conflicted", reason: "unwritable" });
         continue;
       }
       const { start, end } = again.edit;
@@ -324,7 +324,7 @@ export async function openSession(options: {
       // Staging refused overlap on the old bytes; the writer's answers on the new ones can overlap.
       // The earlier-staged edit keeps its place and the later one is conflicted, never spliced over it.
       if (kept.some(k => overlaps(k, again.edit))) {
-        notices.push({ source, path: e.path, outcome: "conflicted" });
+        notices.push({ source, path: e.path, outcome: "conflicted", reason: "overlap" });
         continue;
       }
       const now = bytes.slice(start, end);
@@ -667,7 +667,7 @@ export async function openSession(options: {
     const version = await sha256(read.bytes);
     if (version !== staging.version) rebase(key, staging, read.bytes, version);
     const dropped = notices.slice(first).filter(n => n.outcome === "conflicted" && n.source === source);
-    const edits: SourceCommit["edits"][number][] = dropped.map(n => ({ path: n.path, outcome: "conflicted" }));
+    const edits: SourceCommit["edits"][number][] = dropped.map(n => ({ path: n.path, outcome: "conflicted", ...(n.reason === undefined ? {} : { reason: n.reason }) }));
     const remaining = staged.get(key);
     if (!remaining) return { source, location: key, outcome: "conflicted", edits };
     const bytes = splice(remaining.base, remaining.edits);

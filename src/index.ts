@@ -56,6 +56,8 @@ export interface SourceCommit {
     readonly path: string;
     /** `overrode`: the value on disk had changed, and the edit replaced it. */
     readonly outcome: "written" | "overrode" | "conflicted";
+    /** Why an edit was dropped; present exactly when `outcome` is `conflicted`. */
+    readonly reason?: ConflictReason;
     /** The bytes on disk that an overriding edit replaced. */
     readonly disk?: Uint8Array;
   }[];
@@ -66,6 +68,13 @@ export interface SourceCommit {
  * (`EditValue`), so a writer from either library fits the other by shape and not by method bivariance.
  */
 export type EditValue = string | number | bigint | boolean | null;
+
+/**
+ * Why a staged edit was dropped as conflicted: `gone`, its path is no longer found in the source's
+ * new version (or the source left the graph); `overlap`, its new range overlaps an earlier-staged
+ * edit's; `unwritable`, its writer found the path but refused to write the value on the new bytes.
+ */
+export type ConflictReason = "gone" | "overlap" | "unwritable";
 
 export type StageResult = { readonly ok: true } | { readonly ok: false; readonly reason: string };
 
@@ -149,6 +158,8 @@ export interface EditNotice {
   readonly source: string;
   readonly path: string;
   readonly outcome: "moved" | "overrides" | "conflicted" | "respelled";
+  /** Why the edit was dropped; present exactly when `outcome` is `conflicted`. */
+  readonly reason?: ConflictReason;
   /** The edit's new byte range in the source's new version; absent when conflicted. */
   readonly start?: number;
   readonly end?: number;

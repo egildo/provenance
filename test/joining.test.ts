@@ -165,7 +165,7 @@ test("case 6: a colleague deletes W2: the edit is dropped, reported, and nothing
   memory.write("/g/walls.yaml", withoutW2);
   await absorbed(session, "/g/walls.yaml");
   assert.deepEqual(session.index(), []);
-  assert.deepEqual(changes.flatMap(c => c.edits ?? []).map(e => [e.path, e.outcome]), [["/walls/W2/height", "conflicted"]]);
+  assert.deepEqual(changes.flatMap(c => c.edits ?? []).map(e => [e.path, e.outcome, e.reason]), [["/walls/W2/height", "conflicted", "gone"]]);
   assert.deepEqual(await session.commit(), { sources: [] });
   assert.deepEqual(writes, []);
   assert.equal(await disk(memory), withoutW2);

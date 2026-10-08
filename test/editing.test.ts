@@ -213,7 +213,7 @@ test("case 6: a path gone from the new version is conflicted: dropped, and repor
   memory.write("/w.conf", "a=1\n");
   await absorbed(session, "/w.conf");
   assert.deepEqual(session.index(), []);
-  assert.deepEqual(changes, [{ added: [], removed: [], changed: [id], edits: [{ source: id, path: "b", outcome: "conflicted" }] }]);
+  assert.deepEqual(changes, [{ added: [], removed: [], changed: [id], edits: [{ source: id, path: "b", outcome: "conflicted", reason: "gone" }] }]);
   assert.equal(await session.preview(id), undefined);
   session.close();
 });
@@ -226,7 +226,7 @@ test("a source that vanishes conflicts every edit it had", async () => {
   memory.remove("/w.conf");
   await absorbed(session, "/w.conf");
   assert.deepEqual(session.index(), []);
-  assert.deepEqual(changes.flatMap(c => c.edits ?? []).map(e => [e.path, e.outcome]), [["a", "conflicted"], ["b", "conflicted"]]);
+  assert.deepEqual(changes.flatMap(c => c.edits ?? []).map(e => [e.path, e.outcome, e.reason]), [["a", "conflicted", "gone"], ["b", "conflicted", "gone"]]);
   session.close();
 });
 
@@ -435,7 +435,7 @@ test("case 6, unabsorbed: a commit that finds the path gone reports the source c
   await session.stage("/w.conf", "b", "3");
   memory.write("/w.conf", "a=1\n");
   const report = await session.commit();
-  assert.deepEqual(report, { sources: [{ source: id, location: "/w.conf", outcome: "conflicted", edits: [{ path: "b", outcome: "conflicted" }] }] });
+  assert.deepEqual(report, { sources: [{ source: id, location: "/w.conf", outcome: "conflicted", edits: [{ path: "b", outcome: "conflicted", reason: "gone" }] }] });
   assert.deepEqual(writes, []);
   assert.deepEqual(session.index(), []);
   session.close();
@@ -673,8 +673,8 @@ test("fix 2: after a rebase, of two staged edits that now overlap the later-stag
   await absorbed(session, "/w.conf");
   assert.deepEqual(session.index().map(e => [e.path, e.start, e.end, e.base]), [["a", 4, 5, sha(bytes(BANG))]]);
   assert.deepEqual(
-    changes.flatMap(c => c.edits ?? []).map(e => [e.path, e.outcome]),
-    [["a", "moved"], ["b", "conflicted"]],
+    changes.flatMap(c => c.edits ?? []).map(e => [e.path, e.outcome, e.reason]),
+    [["a", "moved", undefined], ["b", "conflicted", "overlap"]],
   );
   assert.equal(text((await session.preview(idOf(session, "/w.conf")))?.bytes ?? new Uint8Array()), "!\na=77\nb=2\n");
   const report = await session.commit();
@@ -691,7 +691,7 @@ test("fix 2: the same, when only the commit meets the moved disk", async () => {
   await session.stage("/w.conf", "b", "3");
   memory.write("/w.conf", BANG);
   const report = await session.commit();
-  assert.deepEqual(report.sources.map(s => [s.outcome, s.edits.map(e => [e.path, e.outcome])]), [["written", [["b", "conflicted"], ["a", "written"]]]]);
+  assert.deepEqual(report.sources.map(s => [s.outcome, s.edits.map(e => [e.path, e.outcome, e.reason])]), [["written", [["b", "conflicted", "overlap"], ["a", "written", undefined]]]]);
   assert.equal(await read(memory, "/w.conf"), "!\na=77\nb=2\n");
   session.close();
 });
@@ -704,5 +704,36 @@ test("fix 2: 'later-staged' is the edit staged last, so restaging an edit makes 
   memory.write("/w.conf", BANG);
   await absorbed(session, "/w.conf");
   assert.deepEqual(session.index().map(e => [e.path, e.start, e.end, e.value]), [["b", 4, 5, "3"]]);
+  session.close();
+});
+
+// Round 2: a conflict carries its reason. "gone" and "overlap" are asserted beside the cases above;
+// "unwritable" is the writer finding the path but refusing to write on the new bytes.
+const refusing: Writer = {
+  claims: keyValue.claims,
+  locate: keyValue.locate,
+  write: (data, path, value) => (data[0] === 0x21 ? { ok: false, reason: "no longer writable" } : keyValue.write(data, path, value)),
+};
+
+test("round 2: a writer that finds the path but refuses to write it on the new bytes conflicts the edit as unwritable", async () => {
+  const { session, memory } = await open({ "/w.conf": W }, { writers: [refusing] });
+  const changes = heard(session);
+  await session.stage("/w.conf", "b", "3");
+  memory.write("/w.conf", BANG);
+  await absorbed(session, "/w.conf");
+  assert.deepEqual(session.index(), []);
+  const id = idOf(session, "/w.conf");
+  assert.deepEqual(changes.flatMap(c => c.edits ?? []), [{ source: id, path: "b", outcome: "conflicted", reason: "unwritable" }]);
+  session.close();
+});
+
+test("round 2: the same, when only the commit meets the moved disk", async () => {
+  const memory = createMemoryHost({ "/w.conf": W });
+  const quiet: Host = { ...memory, watch: () => ({ set: () => undefined, close: () => undefined }) };
+  const session = await openSession({ host: quiet, entry: "/w.conf", handlers: [], writers: [refusing], writable: ["/"] });
+  const id = idOf(session, "/w.conf");
+  await session.stage("/w.conf", "b", "3");
+  memory.write("/w.conf", BANG);
+  assert.deepEqual(await session.commit(), { sources: [{ source: id, location: "/w.conf", outcome: "conflicted", edits: [{ path: "b", outcome: "conflicted", reason: "unwritable" }] }] });
   session.close();
 });

@@ -120,10 +120,14 @@ interface EditNotice {                 // one per edit a rebase moved, found ove
   readonly source: string;
   readonly path: string;
   readonly outcome: "moved" | "overrides" | "conflicted" | "respelled";   // respelled: same range, new bytes
+  readonly reason?: ConflictReason;    // present exactly when conflicted
   readonly start?: number;             // the new range; absent when conflicted
   readonly end?: number;
   readonly disk?: Uint8Array;
 }
+
+/** Why a staged edit was dropped: its path is no longer found (or its source left the graph); its new range overlaps an earlier-staged edit's; its writer refuses to write the value on the new bytes. */
+type ConflictReason = "gone" | "overlap" | "unwritable";
 
 interface CommitReport { readonly sources: readonly SourceCommit[] }
 interface SourceCommit {
@@ -132,7 +136,7 @@ interface SourceCommit {
   readonly outcome: "written" | "refused" | "failed" | "conflicted";
   readonly reason?: string;
   readonly version?: string;           // the version written
-  readonly edits: readonly { readonly path: string; readonly outcome: "written" | "overrode" | "conflicted"; readonly disk?: Uint8Array }[];
+  readonly edits: readonly { readonly path: string; readonly outcome: "written" | "overrode" | "conflicted"; readonly reason?: ConflictReason; readonly disk?: Uint8Array }[];
 }
 ```
 
