@@ -134,3 +134,21 @@ Cascata or anything not allowed by the role table in `boundary.test.ts`.
   no version bump (the owner releases); do not edit `docs/` or the kernel spec, report what should
   change; existing tests do not change to fit new work (a test I replaced was named in the report as
   deliberate). A background run is killed after 600 s of silence, so keep commands short.
+
+## Addendum, 2026-10-08 (the 0.5 fixes round; `specs/fixes-0.5/report.md`)
+
+- Closed from "Open edges": overlap after a rebase (the later-staged edit is conflicted; a restaged
+  edit goes last in `staging.edits`, which is the order `rebase` reads); `editTarget` on a symlinked
+  path; a read pass racing a commit (tested, see the report for what is and is not covered). The
+  "method bivariance" trap is gone: `Writer` and `session.stage` take `EditValue`, Cascata's union.
+- **A real-disk test that fails without closing its session hangs the whole runner** (the Node
+  host's watchers keep the process alive; `node --test` then waits forever). `test/real-disk.test.ts`
+  closes in `finally`; `node-host.test.ts` and `joining.test.ts`'s real-disk tests do not, and hung
+  twice under a sabotage of `src/node.ts`. Wrap before you sabotage the Node host.
+- macOS has no `timeout(1)`; `timeout 100 npm test` prints nothing and looks like a hang.
+  `node-host.test.ts` leaves four `provenance-*` directories in the temporary directory per run.
+- `editTarget` answers the document's `origin.id` in the spelling it was loaded under, link and
+  all (`/var/...`); only `stage` canonicalizes it. A sabotage written as `false && cond` breaks
+  type narrowing and fails `tsc`; use `kept.length > 99 && cond`.
+- The sandbox now has tests for a symlinked root and for letter case (macOS only; skipped
+  elsewhere, by probing). Windows drive letters and a root that does not exist yet remain untested.
