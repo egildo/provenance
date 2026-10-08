@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.0 — 2026-10-08
+
+**Write-back's first slice: the editing stage** ([design](docs/write-back.md), [spec](specs/editing/spec.md), [#4](https://github.com/egildo/provenance/issues/4)), and its first end-to-end proof with Cascata ([spec](specs/joining/spec.md)).
+
+- **Writers.** A format plug-in's editing half (`claims`, `locate`, `write`), given to `openSession` as `writers`. Cascata 1.11's `yamlWriter()` and `jsonWriter()` fit it by shape.
+- **Staging, the index, previews.** `session.stage(location, path, value)` stages a set edit against the source's base; a second edit at one path replaces the first. `index()`, `unstage()`, and `preview(id)` (the base with every staged edit spliced in, analysed and held while it stands).
+- **Rebase by path.** When a staged source changes on disk, each edit is found again by its path and written again by its writer: moved, respelled, overriding a value changed on disk (kept and reported), or conflicted when the path is gone. Every outcome reaches change listeners through `Change.edits`.
+- **Commit.** One file at a time, each atomically (the Node host writes a temporary file and renames it). The last to commit wins, per value, and says so. A report per edit (`written`, `overrode`, `conflicted`) and per source (`written`, `refused`, `failed`, `conflicted`). A throw after a file is written leaves that file committed.
+- **A write sandbox.** `writable` roots, judged on canonical locations segment by segment; absent means nothing is writable.
+- **`Host.write`**, optional: a host without it can stage and preview, and commit refuses.
+- **Proven end to end** on a geometry fixture: the hand-counted cases of the design, through Cascata's writer, a cascade through Cascata's `editTarget` (a schema default refused as inherited), and a run on a real disk.
+- Cascata is a **development** dependency only; nothing in the library imports it.
+
+Known edges, not fixed: the two libraries type an edit's value differently (they meet through TypeScript's method bivariance; #5); installing the development dependency needs GitHub Packages credentials; `editTarget` against symlinked paths on a real disk, a read pass racing a commit, and staged ranges overlapping after a rebase are untested.
+
 ## 0.4.0 — 2026-10-08
 
 A minor release because a kernel promise changes: the same bytes can now be analysed more than once ([spec](specs/held-versions/spec.md), [#3](https://github.com/egildo/provenance/issues/3)).
