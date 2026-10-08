@@ -321,6 +321,12 @@ export async function openSession(options: {
       }
       const { start, end } = again.edit;
       checkRange(bytes.length, start, end, "the writer");
+      // Staging refused overlap on the old bytes; the writer's answers on the new ones can overlap.
+      // The earlier-staged edit keeps its place and the later one is conflicted, never spliced over it.
+      if (kept.some(k => overlaps(k, again.edit))) {
+        notices.push({ source, path: e.path, outcome: "conflicted" });
+        continue;
+      }
       const now = bytes.slice(start, end);
       const was = staging.base.subarray(e.start, e.end);
       const same = now.length === was.length && now.every((byte, i) => byte === was[i]);
@@ -632,9 +638,8 @@ export async function openSession(options: {
     if (clash) return { ok: false, reason: `the edit overlaps the staged edit at ${clash.path}` };
     if (!staging) staged.set(key, (staging = { writer, version: node.version, base, edits: [] }));
     const edit: Staged = { path, value, start, end, bytes, status: "staged" };
-    const at = staging.edits.findIndex(e => e.path === path);
-    if (at < 0) staging.edits.push(edit);
-    else staging.edits[at] = edit;
+    // Replaced, the edit goes last: the list is in the order edits were staged, which a rebase reads.
+    staging.edits = [...staging.edits.filter(e => e.path !== path), edit];
     staging.preview = undefined;
     return { ok: true };
   }

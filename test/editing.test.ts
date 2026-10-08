@@ -650,3 +650,59 @@ test("a value is a scalar: an object is a compile error, and the scalars compile
   await session.stage("/w.conf", "a", null);
   session.close();
 });
+
+// Fix 2 (specs/fixes-0.5/plan.md): staging refuses overlapping ranges, and a rebase must too.
+// A writer whose answer for `b` depends on the bytes: while they begin with `!`, `b`'s value is
+// written over `a`'s. On `a=1⏎b=2⏎` the two ranges are 2-3 and 6-7; on `!⏎a=1⏎b=2⏎` (two bytes
+// longer, `a`'s value at 4-5) `b` also answers 4-5, so the rebased edits overlap.
+const folding: Writer = {
+  claims: keyValue.claims,
+  locate: keyValue.locate,
+  write: (data, path, value) => keyValue.write(data, path === "b" && data[0] === 0x21 ? "a" : path, value),
+};
+const BANG = "!\na=1\nb=2\n";
+
+test("fix 2: after a rebase, of two staged edits that now overlap the later-staged is conflicted, reported, and never spliced", async () => {
+  const { session, memory } = await open({ "/w.conf": W }, { writers: [folding] });
+  const changes: Change[] = [];
+  session.onChange(c => changes.push(c));
+  await session.stage("/w.conf", "a", "77");
+  await session.stage("/w.conf", "b", "3");
+  assert.deepEqual(session.index().map(e => [e.path, e.start, e.end]), [["a", 2, 3], ["b", 6, 7]]);
+  memory.write("/w.conf", BANG);
+  await absorbed(session, "/w.conf");
+  assert.deepEqual(session.index().map(e => [e.path, e.start, e.end, e.base]), [["a", 4, 5, sha(bytes(BANG))]]);
+  assert.deepEqual(
+    changes.flatMap(c => c.edits ?? []).map(e => [e.path, e.outcome]),
+    [["a", "moved"], ["b", "conflicted"]],
+  );
+  assert.equal(text((await session.preview(idOf(session, "/w.conf")))?.bytes ?? new Uint8Array()), "!\na=77\nb=2\n");
+  const report = await session.commit();
+  assert.deepEqual(report.sources.map(s => [s.outcome, s.edits.map(e => [e.path, e.outcome])]), [["written", [["a", "written"]]]]);
+  assert.equal(await read(memory, "/w.conf"), "!\na=77\nb=2\n");
+  session.close();
+});
+
+test("fix 2: the same, when only the commit meets the moved disk", async () => {
+  const memory = createMemoryHost({ "/w.conf": W });
+  const quiet: Host = { ...memory, watch: () => ({ set: () => undefined, close: () => undefined }) };
+  const session = await openSession({ host: quiet, entry: "/w.conf", handlers: [], writers: [folding], writable: ["/"] });
+  await session.stage("/w.conf", "a", "77");
+  await session.stage("/w.conf", "b", "3");
+  memory.write("/w.conf", BANG);
+  const report = await session.commit();
+  assert.deepEqual(report.sources.map(s => [s.outcome, s.edits.map(e => [e.path, e.outcome])]), [["written", [["b", "conflicted"], ["a", "written"]]]]);
+  assert.equal(await read(memory, "/w.conf"), "!\na=77\nb=2\n");
+  session.close();
+});
+
+test("fix 2: 'later-staged' is the edit staged last, so restaging an edit makes it the one that yields", async () => {
+  const { session, memory } = await open({ "/w.conf": W }, { writers: [folding] });
+  await session.stage("/w.conf", "a", "77");
+  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", "a", "88"); // a is now the later-staged
+  memory.write("/w.conf", BANG);
+  await absorbed(session, "/w.conf");
+  assert.deepEqual(session.index().map(e => [e.path, e.start, e.end, e.value]), [["b", 4, 5, "3"]]);
+  session.close();
+});
