@@ -24,11 +24,13 @@ Written with a capital, Provenance is the library.
 
 **Commit.** Writing every staged edit to disk, one file at a time, each atomically. A file that no longer hashes to its base version is rebased first; a value changed on both sides is written as staged — the last to commit wins, per value — and reported. Afterwards the written versions become the base versions and the index empties. *Amended 2026-10-08 (`write-back.md`): it refused a file that had moved.* Not a version-control commit; one may follow, and that is the consumer's call. *(editing)*
 
-**Conflicted.** The state of a staged edit whose target is gone from a source's new version after a rebase. In the first version it is dropped and reported, never blocking. *Amended 2026-10-08: a value changed on both sides is no longer conflicted; the staged edit overrides it, with a notice.* *(editing)*
+**Conflicted.** The state of a staged edit whose target is gone from a source's new version after a rebase, or whose range, after a rebase, overlaps an edit staged before it (the later-staged yields). In the first version it is dropped and reported, never blocking. *Amended 2026-10-08: a value changed on both sides is no longer conflicted; the staged edit overrides it, with a notice.* *(editing)*
 
 **Declared.** An edge origin: the edge was found by a handler parsing a source.
 
 **Edge.** A dependency from a place in one source to another source: `from` (the address of the span that asks), `request` (as written), `target` (a source, or unresolved), `kind` (requires or candidate), and `origin` (declared or observed).
+
+**Edit value.** What a set edit writes: a string, a number, a big integer, a boolean or null — the same union in Provenance and Cascata, so a writer from either fits the other (`EditValue`). *(editing)*
 
 **Edit.** A change staged against a source: either a text edit, which carries **two addresses** — an address in the base version plus the replacement bytes, and a semantic address (a path in the format's own terms, and the intended value) — or a file operation, which is create, delete or rename. *Amended 2026-10-08 (`write-back.md`): the semantic address.* *(editing)*
 

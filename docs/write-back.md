@@ -84,6 +84,8 @@ that can disagree about where its bytes are.
      wins, per value), and the session is told it is overriding a newer value, with the disk's bytes
      it will replace; the edit stays marked as overriding until it is staged again;
    - the path is gone → the edit is dropped, and the session is told.
+   - the edit now overlaps one staged before it → the later-staged edit is dropped as conflicted,
+     and the session is told (the text moved; it is not a writer bug).
 4. **Commit.** Each source's preview is written if the disk still holds its base; if not, step 3
    runs first. Afterwards the written bytes are the new base and the index empties for that source.
 

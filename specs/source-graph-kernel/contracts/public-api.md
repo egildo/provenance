@@ -34,7 +34,7 @@ interface Session {
   addRoot(location: string): Promise<void>;
   removeRoot(location: string): Promise<void>;
   onChange(listener: (change: Change) => void): () => void;
-  stage(location: string, path: string, value: unknown): Promise<StageResult>;   // editing: below
+  stage(location: string, path: string, value: EditValue): Promise<StageResult>;   // editing: below
   index(): readonly StagedEdit[];
   unstage(location: string, path?: string): Promise<void>;
   preview(id: string): Promise<Preview | undefined>;
@@ -93,17 +93,20 @@ interface Writer {                     // pure, like a handler; path and value a
   locate(bytes: Uint8Array, path: string):
     | { readonly ok: true; readonly start: number; readonly end: number }
     | { readonly ok: false; readonly reason: string };
-  write(bytes: Uint8Array, path: string, value: unknown):
+  write(bytes: Uint8Array, path: string, value: EditValue):
     | { readonly ok: true; readonly edit: { readonly start: number; readonly end: number; readonly bytes: Uint8Array } }
     | { readonly ok: false; readonly reason: string };
 }
+
+/** A scalar, the same union as Cascata's `EditValue`; the first slice sets values only (fixes-0.5). */
+type EditValue = string | number | bigint | boolean | null;
 
 type StageResult = { readonly ok: true } | { readonly ok: false; readonly reason: string };
 
 interface StagedEdit {
   readonly source: string;             // a source id
   readonly path: string;
-  readonly value: unknown;
+  readonly value: EditValue;
   readonly base: string;               // the base version the byte address is against
   readonly start: number;              // bytes in the base version
   readonly end: number;

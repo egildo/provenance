@@ -27,8 +27,8 @@ way the `include` handler tests the kernel. The real YAML and JSON plug-in is Ca
   `path` and `value` are opaque to Provenance; the writer owns them. Writers are pure, like handlers:
   no reads, no writes. `openSession` takes `writers?: readonly Writer[]`; the first that claims a
   location is its writer.
-  *As built: `path` is a string, so edits at one path can be compared and replaced; `value` is
-  opaque.*
+  *As built: `path` is a string, so edits at one path can be compared and replaced. `value` was opaque
+  (`unknown`) until `specs/fixes-0.5/`: it is now `EditValue`, the scalar union Cascata uses.*
 - **FR-002** `Host` gains an **optional** `write(location, bytes): Promise<{ ok: true } | { ok: false;
   reason }>`. Optional, like Cascata's verbs: a host without it can stage and preview, and commit
   refuses. The Node host writes atomically per file — a temporary file in the same directory, then a
@@ -54,6 +54,9 @@ way the `include` handler tests the kernel. The real YAML and JSON plug-in is Ca
 - **FR-006** `session.preview(id)` returns the source's base bytes with every staged edit spliced in,
   applied from the end backwards, and the preview's version (its SHA-256). Staged edits on one source
   never overlap: two paths whose ranges overlap are a writer bug, refused at staging.
+  *Amended (`specs/fixes-0.5/`): overlap at staging is a writer bug; overlap after a rebase is not —
+  the text moved — so a rebase rechecks it, and the later-staged of two overlapping edits is conflicted
+  (a restaged edit counts as staged last).*
 - **FR-007** Staging, unstaging and commit are session work: serialized, and rolled back on a throw
   like every other piece (the kernel's `broken-is-reported-not-thrown`). A preview is held like any
   version under `cache-by-handler-and-hash` while its edits are staged.
