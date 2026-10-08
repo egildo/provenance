@@ -12,7 +12,7 @@ import type { Change, Host, Session } from "../src/index.ts";
 import { createMemoryHost } from "../src/memory.ts";
 import { createNodeHost } from "../src/node.ts";
 
-// Edges the joining milestone left untested (specs/fixes-0.5/plan.md, fixes 3 and 4): the
+// Three edges the joining milestone left untested (specs/fixes-0.5/plan.md, fixes 3 and 4): the
 // location Cascata answers on a path behind a symbolic link, a read pass racing a commit, and a
 // writable root in the wrong letter case. Expected values are worked out by hand.
 
@@ -238,6 +238,45 @@ test("fix 3, on a real disk: reads racing a commit see the whole old file or the
         was = now;
       }
       assert.ok(seenOld + seenNew > 0);
+    } finally {
+      session.close();
+    }
+  } finally {
+    await fs.rm(dir, { recursive: true });
+  }
+});
+
+// 4. A writable root in a different letter case --------------------------------------------------
+
+/** Whether the file system under `parent` folds case, found by asking it: never by the platform's name. */
+async function foldsCase(parent: string): Promise<boolean> {
+  const dir = await fs.mkdtemp(path.join(parent, "provenance-case-probe-"));
+  try {
+    await fs.writeFile(path.join(dir, "probe.txt"), "x");
+    return await fs.access(path.join(dir, "PROBE.TXT")).then(() => true, () => false);
+  } finally {
+    await fs.rm(dir, { recursive: true });
+  }
+}
+
+const folds = await foldsCase(await fs.realpath(os.tmpdir()));
+
+test("fix 4: a writable root spelled in another letter case than the disk still contains its files", { skip: folds ? false : "the file system under the temporary directory is case-sensitive: a root in another case is a different directory there" }, async () => {
+  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "provenance-CaseFold-")));
+  const spelled = dir.toUpperCase();
+  assert.notEqual(spelled, dir);
+  try {
+    await writeCascade(dir);
+    const host = createNodeHost({ debounce: 50 });
+    // The claim itself: the host answers the disk's own spelling, whatever case it was asked in.
+    assert.equal(await host.canonicalize(spelled), dir);
+    const file = path.join(dir, "project.yaml");
+    const session = await openSession({ host, entry: file, handlers: [], writers: [yamlWriter()], writable: [spelled] });
+    try {
+      assert.deepEqual(await session.stage(file, "/walls/W1/height", 3.4), { ok: true });
+      const report = await session.commit();
+      assert.deepEqual(report.sources.map(s => [s.location, s.outcome]), [[file, "written"]]);
+      assert.equal(await fs.readFile(file, "utf8"), NEW_PROJECT);
     } finally {
       session.close();
     }
