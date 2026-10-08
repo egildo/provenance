@@ -127,6 +127,17 @@ Provenance publishes to GitHub Packages, not the public npm registry. Point npm 
 npm install @egildo/provenance
 ```
 
+**Building Provenance itself needs a token.** Its tests prove write-back end to end with Cascata,
+which is a development dependency published to GitHub Packages too, and GitHub's registry asks for a
+token even to read. Before `npm install` in a clone, give npm a GitHub personal access token with the
+`read:packages` scope, in `~/.npmrc`:
+
+```
+//npm.pkg.github.com/:_authToken=<token>
+```
+
+A CI service needs the same token as a secret.
+
 Requires Node 22 or later (22.18+ to run the tests from source, for type stripping).
 
 ## Entry points
