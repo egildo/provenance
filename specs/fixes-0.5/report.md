@@ -104,3 +104,48 @@ method. What it lacked: that a failing real-disk test hangs rather than fails (c
 that macOS has no `timeout`, that the leaked temp directories exist, and the rule for what order
 `staging.edits` is in (it is read by `rebase`; the note's "edits" description did not say). A short
 addendum covering these is at its end.
+
+## Round 2
+
+Tests 172 before, 174 after. Commits: e1064c2 `feat: a conflicted edit carries its reason (gone,
+overlap or unwritable)`; 57b615d `test: every Node-host test closes its session and removes its
+directory when it ends, however it ends`.
+
+### A conflict carries its reason
+
+`ConflictReason = "gone" | "overlap" | "unwritable"` (exported; in `src/index.ts` and the contract).
+`EditNotice.reason` and the commit report's per-edit `reason` are present exactly when the outcome is
+`conflicted`. Paths in `session.ts`: `locate` fails on the new bytes: `gone`. The source is refused,
+external, unreadable, or leaves the graph (`conflict(key)`): `gone` too, which the owner's list did not
+name; I read "the target is no longer there" widely. `write` refuses on the new bytes after `locate`
+found the path: `unwritable`; this path **existed** before (the `!again.ok` branch of `rebase`), only
+untested. Overlap with an earlier-staged edit: `overlap`.
+Tests first, red as compile errors (`reason` did not exist): the existing case 6 tests (notice,
+unabsorbed commit), the vanished-source test and joining's case 6 now assert `gone`; the two fix 2
+tests assert `overlap` in notice and commit report; two new tests (via the watcher, via the commit
+alone) assert `unwritable` with a writer that refuses once the bytes begin with `!`. Existing
+assertions were extended, not relaxed (two whole-object `deepEqual`s gained `reason: "gone"`).
+Sabotage, every conflict reported `gone`: 4 red (both `overlap` tests, both `unwritable` tests); the
+`gone` tests cannot go red under it, by construction.
+
+### Test hygiene
+
+`test/helpers.ts` gains `scratch(t, prefix)` (a real-path temporary directory removed in `t.after`)
+and `closing(t, session)` (closed in `t.after`). `node-host.test.ts` (all seven tests) and
+`joining.test.ts`'s two real-disk tests use them; the explicit `close()` and `rm` calls at their ends
+are gone. `real-disk.test.ts` already closed and removed in `finally`.
+- **Directories:** `provenance-*` under the temporary directory, immediately before and after a full
+  `npm test`: 87 and 87 (the coordinator's correction: not from zero). Before the change each run left
+  four (`node-host.test.ts`'s `directory()`).
+- **A failing real-disk assertion fails, it does not hang:** three real-disk assertions sabotaged at
+  once (one each in `joining`, `node-host`, `real-disk`): the full run took **2.5 s** wall time,
+  reported 3 failures, exited 1, and left no directory (87 and 87). Restored; `grep SABOTAGE` empty.
+- **Not done, and a decision:** the memory-host tests (about 100 sessions) still end with a plain
+  `session.close()`. A memory host has no watcher or timer, so a failing assertion there fails and
+  cannot hang; wrapping them all would be churn. If the owner wants them uniform, `closing()` is the
+  one-line change per test.
+
+### Still wrong
+
+`docs/write-back.md` and the glossary do not yet name the three reasons (the owner's call, not the
+contract's). The 5 s timeout in `node-host.test.ts`'s `next()` can delay a failed run by up to 5 s.
