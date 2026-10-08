@@ -1,12 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { createOrigin, editTarget, load, parse } from "@egildo/cascata";
 import type { Node } from "@egildo/cascata";
 import { yamlWriter } from "@egildo/cascata/writers";
 import { openSession } from "../src/index.ts";
 import type { Change, Host, Session, Writer } from "../src/index.ts";
 import { createMemoryHost } from "../src/memory.ts";
+import { createNodeHost } from "../src/node.ts";
 import { absorbed, byLocation } from "./helpers.ts";
 
 // The walking skeleton, end to end (specs/joining/spec.md): Cascata's writers and `editTarget` in
@@ -218,7 +221,129 @@ test("case 10: a string that now needs quotes is written quoted, and reads back 
   session.close();
 });
 
-// Keep the imports honest for the cascade tests added next.
-void byLocation;
-void load;
-void editTarget;
+// The cascade, end to end (joining FR-004, FR-005): the loop through `editTarget`.
+
+const PROJECT = fixture("project.yaml");
+const SCHEMA = fixture("house.schema.yaml");
+
+async function openCascade(extra: { writable?: readonly string[] } = {}) {
+  const memory = createMemoryHost({ "/g/project.yaml": PROJECT, "/g/house.schema.yaml": SCHEMA, "/g/walls.yaml": WALLS });
+  const { host, writes } = spied(memory);
+  const session = await openSession({ host, entry: "/g/project.yaml", handlers: [], writers: [yamlWriter()], writable: extra.writable ?? ["/g"] });
+  return { memory, session, writes };
+}
+
+/** Loads the cascade through a read pass (so the session holds what Cascata read), and returns the merged configuration. */
+async function loadCascade(session: Session) {
+  const pass = session.read("cascade");
+  const loaded = await load("/g/project.yaml", { host: pass.host, sandboxRoot: "/g" });
+  await pass.end();
+  assert.ok(loaded.ok, "the fixture cascade must load");
+  return loaded.configuration;
+}
+
+type Edited = { ok: true } | { ok: false; reason: string; code?: string };
+
+/** The loop: ask `editTarget` where a merged pointer is written, then stage there. */
+async function editMerged(session: Session, pointer: string, value: number | string): Promise<Edited> {
+  const target = editTarget(await loadCascade(session), pointer);
+  if (!target.ok) return { ok: false, reason: target.diagnostics[0]?.message ?? "", ...(target.diagnostics[0] ? { code: target.diagnostics[0].code } : {}) };
+  assert.equal(target.format, "yaml");
+  return session.stage(target.location, target.pointer, value);
+}
+
+test("the fixture's project.yaml is 80 bytes with W1's height at 54-57 (counted by hand)", () => {
+  assert.equal(bytes(PROJECT).length, 80);
+  assert.equal(PROJECT.slice(54, 57), "3.2");
+});
+
+test("FR-005: a value supplied by the schema's provide is refused as inherited, naming the schema, and nothing is staged", async () => {
+  const { session, writes } = await openCascade();
+  const result = await editMerged(session, "/defaults/height", 3.4);
+  assert.equal(result.ok, false);
+  assert.equal(!result.ok && result.code, "edit-target-inherited");
+  assert.match(!result.ok ? result.reason : "", /house\.schema\.yaml/);
+  assert.deepEqual(session.index(), []);
+  assert.deepEqual(await session.commit(), { sources: [] });
+  assert.deepEqual(writes, []);
+  session.close();
+});
+
+test("FR-005: editing /walls/W1/height lands in project.yaml at 54-57, and in nothing else", async () => {
+  const { memory, session, writes } = await openCascade();
+  const configuration = await loadCascade(session);
+  assert.deepEqual(editTarget(configuration, "/walls/W1/height"), { ok: true, location: "/g/project.yaml", pointer: "/walls/W1/height", format: "yaml" });
+  // The pass made the schema a source the session holds, beside the entry.
+  assert.equal(byLocation(session, "/g/house.schema.yaml").state, "leaf");
+  assert.deepEqual(await editMerged(session, "/walls/W1/height", 3.4), { ok: true });
+  assert.deepEqual(session.index().map(e => [e.start, e.end]), [[54, 57]]);
+  const report = await session.commit();
+  assert.deepEqual(report.sources.map(r => [r.location, r.outcome]), [["/g/project.yaml", "written"]]);
+  assert.deepEqual(writes, ["/g/project.yaml"]);
+  const after = await disk(memory, "/g/project.yaml");
+  assert.equal(after, PROJECT.replace("W1:\n    height: 3.2", "W1:\n    height: 3.4"));
+  onlyTheValueMoved(PROJECT, after, 54, 57, "3.4");
+  assert.equal(await disk(memory, "/g/house.schema.yaml"), SCHEMA);
+  assert.equal(await disk(memory, "/g/walls.yaml"), WALLS);
+  // Load again: the merged value is the one set, still a decimal, and W2 is untouched.
+  const again = await loadCascade(session);
+  const tree = again.tree;
+  const w1 = at(tree, "/walls/W1/height");
+  const w2 = at(tree, "/walls/W2/height");
+  assert.deepEqual([w1.type === "scalar" && w1.kind, w1.type === "scalar" && w1.value], ["float", 3.4]);
+  assert.deepEqual([w2.type === "scalar" && w2.kind, w2.type === "scalar" && w2.value], ["float", 3.2]);
+  session.close();
+});
+
+test("FR-004: outside the writable root, the loop stages and previews but the commit is refused", async () => {
+  const { memory, session } = await openCascade({ writable: ["/elsewhere"] });
+  assert.deepEqual(await editMerged(session, "/walls/W1/height", 3.4), { ok: true });
+  const report = await session.commit();
+  assert.equal(report.sources[0]?.outcome, "refused");
+  assert.equal(await disk(memory, "/g/project.yaml"), PROJECT);
+  session.close();
+});
+
+// One run on a real disk (joining FR-006): cases 1 and 3, through the Node host.
+
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+
+async function onDisk(content: string) {
+  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "provenance-join-")));
+  const file = path.join(dir, "walls.yaml");
+  await fs.writeFile(file, content);
+  const session = await openSession({ host: createNodeHost({ debounce: 50 }), entry: file, handlers: [], writers: [yamlWriter()], writable: [dir] });
+  await sleep(100); // let the platform's watchers start before the test writes
+  const changes: Change[] = [];
+  session.onChange(c => changes.push(c));
+  return { dir, file, session, changes };
+}
+
+test("FR-006, case 1, on a real disk: the file is replaced atomically, and the session hears its own write once", async () => {
+  const { dir, file, session, changes } = await onDisk(WALLS);
+  const inode = (await fs.stat(file)).ino;
+  assert.deepEqual(await session.stage(file, "/walls/W2/height", 3.4), { ok: true });
+  assert.deepEqual(session.index().map(e => [e.start, e.end]), [[47, 50]]);
+  assert.equal((await session.commit()).sources[0]?.outcome, "written");
+  assert.equal(await fs.readFile(file, "utf8"), edited("3.4"));
+  assert.notEqual((await fs.stat(file)).ino, inode); // a temporary file, renamed over the target
+  await sleep(400); // the watcher reports the write; the session already holds that version
+  assert.equal(changes.length, 1);
+  assert.deepEqual(await fs.readdir(dir), ["walls.yaml"]);
+  session.close();
+  await fs.rm(dir, { recursive: true });
+});
+
+test("FR-006, case 3, on a real disk: a comment added by another process moves the edit to 69-72", async () => {
+  const { dir, file, session, changes } = await onDisk(WALLS);
+  await session.stage(file, "/walls/W2/height", 3.4);
+  const note = "# from survey 2026-09\n";
+  await fs.writeFile(file, note + WALLS); // another process saves
+  for (let waited = 0; changes.length === 0 && waited < 5000; waited += 25) await sleep(25);
+  assert.deepEqual(session.index().map(e => [e.start, e.end, e.status]), [[69, 72, "staged"]]);
+  assert.deepEqual(changes.flatMap(c => c.edits ?? []).map(e => [e.path, e.outcome, e.start, e.end]), [["/walls/W2/height", "moved", 69, 72]]);
+  await session.commit();
+  assert.equal(await fs.readFile(file, "utf8"), note + edited("3.4"));
+  session.close();
+  await fs.rm(dir, { recursive: true });
+});
