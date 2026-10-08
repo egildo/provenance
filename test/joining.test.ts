@@ -1,7 +1,7 @@
 import { test } from "node:test";
+import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { createOrigin, editTarget, load, parse } from "@egildo/cascata";
 import type { Node } from "@egildo/cascata";
@@ -10,7 +10,7 @@ import { openSession } from "../src/index.ts";
 import type { Change, Host, Session, Writer } from "../src/index.ts";
 import { createMemoryHost } from "../src/memory.ts";
 import { createNodeHost } from "../src/node.ts";
-import { absorbed, byLocation } from "./helpers.ts";
+import { absorbed, byLocation, closing, scratch } from "./helpers.ts";
 
 // The walking skeleton, end to end (specs/joining/spec.md): Cascata's writers and `editTarget` in
 // Provenance's editing stage, over the geometry fixture. The expected bytes are copied from
@@ -314,19 +314,19 @@ test("FR-004: outside the writable root, the loop stages and previews but the co
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 
-async function onDisk(content: string) {
-  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "provenance-join-")));
+async function onDisk(t: TestContext, content: string) {
+  const dir = await scratch(t, "provenance-join-");
   const file = path.join(dir, "walls.yaml");
   await fs.writeFile(file, content);
-  const session = await openSession({ host: createNodeHost({ debounce: 50 }), entry: file, handlers: [], writers: [yamlWriter()], writable: [dir] });
+  const session = closing(t, await openSession({ host: createNodeHost({ debounce: 50 }), entry: file, handlers: [], writers: [yamlWriter()], writable: [dir] }));
   await sleep(100); // let the platform's watchers start before the test writes
   const changes: Change[] = [];
   session.onChange(c => changes.push(c));
   return { dir, file, session, changes };
 }
 
-test("FR-006, case 1, on a real disk: the file is replaced atomically, and the session hears its own write once", async () => {
-  const { dir, file, session, changes } = await onDisk(WALLS);
+test("FR-006, case 1, on a real disk: the file is replaced atomically, and the session hears its own write once", async t => {
+  const { dir, file, session, changes } = await onDisk(t, WALLS);
   const inode = (await fs.stat(file)).ino;
   assert.deepEqual(await session.stage(file, "/walls/W2/height", 3.4), { ok: true });
   assert.deepEqual(session.index().map(e => [e.start, e.end]), [[47, 50]]);
@@ -336,12 +336,10 @@ test("FR-006, case 1, on a real disk: the file is replaced atomically, and the s
   await sleep(400); // the watcher reports the write; the session already holds that version
   assert.equal(changes.length, 1);
   assert.deepEqual(await fs.readdir(dir), ["walls.yaml"]);
-  session.close();
-  await fs.rm(dir, { recursive: true });
 });
 
-test("FR-006, case 3, on a real disk: a comment added by another process moves the edit to 69-72", async () => {
-  const { dir, file, session, changes } = await onDisk(WALLS);
+test("FR-006, case 3, on a real disk: a comment added by another process moves the edit to 69-72", async t => {
+  const { dir, file, session, changes } = await onDisk(t, WALLS);
   await session.stage(file, "/walls/W2/height", 3.4);
   const note = "# from survey 2026-09\n";
   await fs.writeFile(file, note + WALLS); // another process saves
@@ -350,8 +348,6 @@ test("FR-006, case 3, on a real disk: a comment added by another process moves t
   assert.deepEqual(changes.flatMap(c => c.edits ?? []).map(e => [e.path, e.outcome, e.start, e.end]), [["/walls/W2/height", "moved", 69, 72]]);
   await session.commit();
   assert.equal(await fs.readFile(file, "utf8"), note + edited("3.4"));
-  session.close();
-  await fs.rm(dir, { recursive: true });
 });
 
 test("Cascata's writer, wrapped in an unannotated arrow function, is a Provenance Writer: the two libraries share one value type", async () => {

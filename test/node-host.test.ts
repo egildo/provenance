@@ -1,17 +1,17 @@
 import { test } from "node:test";
+import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { openSession } from "../src/index.ts";
 import type { Change, Session } from "../src/index.ts";
 import { createNodeHost } from "../src/node.ts";
-import { byLocation, include, keyValue } from "./helpers.ts";
+import { byLocation, closing, include, keyValue, scratch } from "./helpers.ts";
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 
-async function directory(files: Record<string, string>): Promise<string> {
-  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "provenance-")));
+async function directory(t: TestContext, files: Record<string, string>): Promise<string> {
+  const dir = await scratch(t, "provenance-");
   for (const [name, content] of Object.entries(files)) await fs.writeFile(path.join(dir, name), content);
   return dir;
 }
@@ -32,27 +32,26 @@ function changes(session: Session) {
   return { seen, next };
 }
 
-async function open(dir: string) {
-  const session = await openSession({ host: createNodeHost({ debounce: 50 }), entry: path.join(dir, "a.md"), handlers: [include] });
+async function open(t: TestContext, dir: string) {
+  const session = closing(t, await openSession({ host: createNodeHost({ debounce: 50 }), entry: path.join(dir, "a.md"), handlers: [include] }));
   await sleep(100); // let the platform's watchers start before the test writes
   return { session, ...changes(session) };
 }
 
-test("a broken include heals when its file appears on disk", async () => {
-  const dir = await directory({ "a.md": '@include{src="missing.md"}\n' });
-  const { session, next } = await open(dir);
+test("a broken include heals when its file appears on disk", async t => {
+  const dir = await directory(t, { "a.md": '@include{src="missing.md"}\n' });
+  const { session, next } = await open(t, dir);
   assert.equal(session.unresolved().length, 1);
   const healed = next();
   await fs.writeFile(path.join(dir, "missing.md"), "found\n");
   await healed;
   assert.deepEqual(session.unresolved(), []);
   assert.equal(byLocation(session, path.join(dir, "missing.md")).state, "analysed");
-  session.close();
 });
 
-test("a change on disk is one change; identical bytes are none", async () => {
-  const dir = await directory({ "a.md": '@include{src="b.md"}\n', "b.md": "one\n" });
-  const { session, seen, next } = await open(dir);
+test("a change on disk is one change; identical bytes are none", async t => {
+  const dir = await directory(t, { "a.md": '@include{src="b.md"}\n', "b.md": "one\n" });
+  const { session, seen, next } = await open(t, dir);
   const b = byLocation(session, path.join(dir, "b.md"));
 
   const changed = next();
@@ -63,12 +62,11 @@ test("a change on disk is one change; identical bytes are none", async () => {
   await fs.writeFile(path.join(dir, "b.md"), "two\n");
   await sleep(300);
   assert.equal(seen.length, 1);
-  session.close();
 });
 
-test("a write-then-rename save is one change", async () => {
-  const dir = await directory({ "a.md": '@include{src="b.md"}\n', "b.md": "one\n" });
-  const { session, seen, next } = await open(dir);
+test("a write-then-rename save is one change", async t => {
+  const dir = await directory(t, { "a.md": '@include{src="b.md"}\n', "b.md": "one\n" });
+  const { session, seen, next } = await open(t, dir);
   const b = byLocation(session, path.join(dir, "b.md"));
 
   const changed = next();
@@ -77,11 +75,10 @@ test("a write-then-rename save is one change", async () => {
   await changed;
   await sleep(300);
   assert.deepEqual(seen, [{ added: [], removed: [], changed: [b.id] }]);
-  session.close();
 });
 
-test("canonicalize follows a symlink; a missing file has no identity", async () => {
-  const dir = await directory({ "real.md": "" });
+test("canonicalize follows a symlink; a missing file has no identity", async t => {
+  const dir = await directory(t, { "real.md": "" });
   await fs.symlink(path.join(dir, "real.md"), path.join(dir, "link.md"));
   const host = createNodeHost();
   assert.equal(await host.canonicalize(path.join(dir, "link.md")), path.join(dir, "real.md"));
@@ -90,8 +87,8 @@ test("canonicalize follows a symlink; a missing file has no identity", async () 
   assert.equal(refused.ok, false);
 });
 
-test("write replaces a file through a temporary file and a rename, so a reader never sees half of it", async () => {
-  const dir = await directory({ "w.conf": "a=1\n" });
+test("write replaces a file through a temporary file and a rename, so a reader never sees half of it", async t => {
+  const dir = await directory(t, { "w.conf": "a=1\n" });
   const host = createNodeHost();
   const file = path.join(dir, "w.conf");
   const before = await fs.stat(file);
@@ -101,22 +98,20 @@ test("write replaces a file through a temporary file and a rename, so a reader n
   assert.notEqual((await fs.stat(file)).ino, before.ino);
   assert.equal((await fs.stat(file)).mode, before.mode);
   assert.deepEqual(await fs.readdir(dir), ["w.conf"]); // no temporary file left behind
-  await fs.rm(dir, { recursive: true });
 });
 
-test("a failed write says why, and leaves nothing behind", async () => {
-  const dir = await directory({});
+test("a failed write says why, and leaves nothing behind", async t => {
+  const dir = await directory(t, {});
   const host = createNodeHost();
   const result = await host.write?.(path.join(dir, "missing", "w.conf"), new Uint8Array([97]));
   assert.equal(result?.ok, false);
   assert.deepEqual(await fs.readdir(dir), []);
-  await fs.rm(dir, { recursive: true });
 });
 
-test("a commit through the Node host writes the file, and the session hears its own write once", async () => {
-  const dir = await directory({ "w.conf": "a=1\nb=2\n" });
+test("a commit through the Node host writes the file, and the session hears its own write once", async t => {
+  const dir = await directory(t, { "w.conf": "a=1\nb=2\n" });
   const file = path.join(dir, "w.conf");
-  const session = await openSession({ host: createNodeHost({ debounce: 50 }), entry: file, handlers: [], writers: [keyValue], writable: [dir] });
+  const session = closing(t, await openSession({ host: createNodeHost({ debounce: 50 }), entry: file, handlers: [], writers: [keyValue], writable: [dir] }));
   await sleep(100);
   const { seen } = changes(session);
   assert.deepEqual(await session.stage(file, "b", "3"), { ok: true });
@@ -126,6 +121,4 @@ test("a commit through the Node host writes the file, and the session hears its 
   await sleep(400); // the watcher reports the write; the session already holds that version
   assert.equal(seen.length, 1);
   assert.deepEqual(await fs.readdir(dir), ["w.conf"]);
-  session.close();
-  await fs.rm(dir, { recursive: true });
 });

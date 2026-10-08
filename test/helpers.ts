@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import type { TestContext } from "node:test";
 import type { Edge, Handler, Host, Session, Source, Writer } from "../src/index.ts";
 
 /** A test-only include handler: `@include{src="…"}` on its own line requires its target. */
@@ -82,4 +86,23 @@ export async function unhandled(action: () => Promise<void>): Promise<unknown[]>
     for (const listener of saved) process.on("unhandledRejection", listener);
   }
   return seen;
+}
+
+/**
+ * A temporary directory (true spelling) that the test removes when it ends, however it ends. A
+ * failing assertion must fail the test, not leave a directory behind.
+ */
+export async function scratch(t: TestContext, prefix: string): Promise<string> {
+  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  return dir;
+}
+
+/**
+ * Closes a session when the test ends, however it ends. A session on the Node host holds watchers,
+ * and an open one keeps the runner alive after a failing assertion: the run hangs instead of failing.
+ */
+export function closing<S extends { close(): void }>(t: TestContext, session: S): S {
+  t.after(() => session.close());
+  return session;
 }
