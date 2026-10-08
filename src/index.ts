@@ -19,7 +19,7 @@ export interface Session {
    * Stages a set edit of the value at `path` in the source at `location` (specs/editing/spec.md).
    * A new edit at a path that already has one replaces it. Refusals resolve; a writer bug throws.
    */
-  stage(location: string, path: string, value: unknown): Promise<StageResult>;
+  stage(location: string, path: string, value: EditValue): Promise<StageResult>;
   /** The staged edits, source by source, each against its source's base version. */
   index(): readonly StagedEdit[];
   /** Drops the staged edit at `path`, or every staged edit of the source. */
@@ -61,13 +61,19 @@ export interface SourceCommit {
   }[];
 }
 
+/**
+ * The value an edit sets: a scalar. The same union, under the same name, as Cascata's writers take
+ * (`EditValue`), so a writer from either library fits the other by shape and not by method bivariance.
+ */
+export type EditValue = string | number | bigint | boolean | null;
+
 export type StageResult = { readonly ok: true } | { readonly ok: false; readonly reason: string };
 
 /** One staged edit: a byte address in its source's base version, and the semantic address that finds it again. */
 export interface StagedEdit {
   readonly source: string;
   readonly path: string;
-  readonly value: unknown;
+  readonly value: EditValue;
   /** The base version the byte address is against. */
   readonly base: string;
   readonly start: number;
@@ -176,14 +182,14 @@ export type Resolution =
 /**
  * The editing half of a format plug-in (specs/editing/spec.md). Pure, like a handler: it reads and
  * writes nothing. `path` is the format's own address of a value (a JSON Pointer, a selector and a
- * property); `value` is opaque to Provenance. Offsets are bytes.
+ * property); `value` is an `EditValue`. Offsets are bytes.
  */
 export interface Writer {
   claims(location: string): boolean;
   /** Where the value at `path` is in `bytes`, or why it is not there. */
   locate(bytes: Uint8Array, path: string): { readonly ok: true; readonly start: number; readonly end: number } | { readonly ok: false; readonly reason: string };
   /** The one splice that sets the value at `path`, in the source's own style, or why it cannot. */
-  write(bytes: Uint8Array, path: string, value: unknown): { readonly ok: true; readonly edit: { readonly start: number; readonly end: number; readonly bytes: Uint8Array } } | { readonly ok: false; readonly reason: string };
+  write(bytes: Uint8Array, path: string, value: EditValue): { readonly ok: true; readonly edit: { readonly start: number; readonly end: number; readonly bytes: Uint8Array } } | { readonly ok: false; readonly reason: string };
 }
 
 export interface Resolver {

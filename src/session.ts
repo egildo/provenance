@@ -7,6 +7,7 @@ import type {
   Change,
   Edge,
   EditNotice,
+  EditValue,
   CommitReport,
   Findings,
   Handler,
@@ -48,7 +49,7 @@ type Node = State & { readonly id: string; readonly key: string; links: Link[]; 
 /** One staged edit as held: the splice, and what finds it again. */
 interface Staged {
   path: string;
-  value: unknown;
+  value: EditValue;
   start: number;
   end: number;
   bytes: Uint8Array;
@@ -610,7 +611,7 @@ export async function openSession(options: {
     };
   }
 
-  async function stageEdit(location: string, path: string, value: unknown): Promise<StageResult> {
+  async function stageEdit(location: string, path: string, value: EditValue): Promise<StageResult> {
     const key = await keyFor(location);
     const node = nodes.get(key);
     if (!node) return { ok: false, reason: "not a source in the session's graph" };

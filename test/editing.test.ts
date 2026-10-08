@@ -638,3 +638,15 @@ test("a rebase that respells an edit without moving it says so", async () => {
   assert.equal(text((await session.preview(id))?.bytes ?? new Uint8Array()), 'a=,\nb="3"\n');
   session.close();
 });
+
+test("a value is a scalar: an object is a compile error, and the scalars compile", async () => {
+  const { session } = await open();
+  // @ts-expect-error an object is not an EditValue
+  await session.stage("/w.conf", "a", { not: "a scalar" });
+  await session.stage("/w.conf", "a", "1");
+  await session.stage("/w.conf", "a", 1);
+  await session.stage("/w.conf", "a", 1n);
+  await session.stage("/w.conf", "a", true);
+  await session.stage("/w.conf", "a", null);
+  session.close();
+});

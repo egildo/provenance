@@ -347,3 +347,18 @@ test("FR-006, case 3, on a real disk: a comment added by another process moves t
   session.close();
   await fs.rm(dir, { recursive: true });
 });
+
+test("Cascata's writer, wrapped in an unannotated arrow function, is a Provenance Writer: the two libraries share one value type", async () => {
+  const cascata = yamlWriter();
+  // No `Parameters<typeof cascata.write>[2]` on `value`: it is contextually an EditValue, here and there.
+  const wrapped: Writer = {
+    claims: location => cascata.claims(location),
+    locate: (data, pointer) => cascata.locate(data, pointer),
+    write: (data, pointer, value) => cascata.write(data, pointer, value),
+  };
+  const { memory, session } = await openWalls(WALLS, [wrapped]);
+  assert.deepEqual(await session.stage("/g/walls.yaml", "/walls/W2/height", 3.4), { ok: true });
+  await session.commit();
+  assert.equal(await disk(memory), edited("3.4"));
+  session.close();
+});
