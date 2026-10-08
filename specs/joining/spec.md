@@ -20,7 +20,8 @@ published.**
 - **FR-002** **The respelling notice** (`specs/editing/spec.md` FR-008, as amended): a rebase that
   keeps an edit's range but changes its bytes is reported in `Change.edits`, like a move.
 - **FR-003** **The geometry fixture**, under `test/fixtures/geometry/`, written by hand:
-  - `house.schema.yaml` — a root schema: `walls` items demand `height` (a decimal) and `id`;
+  - `house.schema.yaml` — a root schema: `walls` items demand `height` (a decimal) — *as built: not `id`,
+    since walls are keyed by id and an item cannot also demand it (corrected after implementation)*;
     `provide`s `defaults: { height: 3.0 }`;
   - `project.yaml` — a config adopting it, with `walls` keyed by id (`W1`, `W2`), each with `height`;
   - `walls.yaml` — the running file of `docs/write-back.md`, 51 bytes, as a data file.
@@ -30,6 +31,9 @@ published.**
   `commit`; load again and read the value. Cases 1 to 10 of `docs/write-back.md`'s "Cases on paper",
   each with its expected bytes copied from that document (they were counted by hand there), run this
   way. Case 11 (CSS) needs a CSS writer and is out of scope.
+  *As built: cases 1–10 are about `walls.yaml`, a data file no cascade adopts, so they go straight to
+  `stage` through `yamlWriter()`; the loop through `editTarget` runs on `project.yaml` (FR-005).
+  Corrected after implementation: the spec had asked for both in one loop.*
 - **FR-005** **The cascade, end to end**: editing `/defaults/height` is refused by `editTarget` as
   inherited, naming `house.schema.yaml`, and nothing is staged; editing `/walls/W1/height` lands in
   `project.yaml` and nowhere else.
