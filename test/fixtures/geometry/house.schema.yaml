@@ -1,0 +1,17 @@
+$id: geometry/house
+keys:
+  defaults:
+    demand:
+      type: mapping
+    provide:
+      height: 3.0
+  walls:
+    demand:
+      type: mapping
+      values:
+        type: mapping
+        keys:
+          height:
+            demand:
+              type: float
+              required: true
