@@ -11,9 +11,14 @@
 - **A write sandbox.** `writable` roots, judged on canonical locations segment by segment; absent means nothing is writable.
 - **`Host.write`**, optional: a host without it can stage and preview, and commit refuses.
 - **Proven end to end** on a geometry fixture: the hand-counted cases of the design, through Cascata's writer, a cascade through Cascata's `editTarget` (a schema default refused as inherited), and a run on a real disk.
-- Cascata is a **development** dependency only; nothing in the library imports it.
+- Cascata is a **development** dependency only; nothing in the library imports it. Building Provenance therefore needs a GitHub Packages token (README, "Install").
+- **One value type across both libraries**: `EditValue` (string, number, big integer, boolean or null), the same union as Cascata's, so an object value is a compile error.
+- **Overlap after a rebase** is rechecked: the later-staged of two overlapping edits is conflicted. A restaged edit counts as staged last.
+- **Every conflict carries its reason** (`ConflictReason`): `gone`, `overlap` or `unwritable`.
+- Tested on a real disk: `editTarget` through the symlinked macOS temporary directory, a read racing a commit (never a torn file), and a writable root given in the wrong letter case.
+- Tests close their sessions and remove their directories however they end, so a failing real-disk test fails in seconds instead of hanging the runner.
 
-Known edges, not fixed: the two libraries type an edit's value differently (they meet through TypeScript's method bivariance; #5); installing the development dependency needs GitHub Packages credentials; `editTarget` against symlinked paths on a real disk, a read pass racing a commit, and staged ranges overlapping after a rebase are untested.
+Known edges, not fixed: a non-atomic rename (Windows, network file systems), a crash mid-commit, and Windows drive letters in the write sandbox are untested.
 
 ## 0.4.0 — 2026-10-08
 

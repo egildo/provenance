@@ -86,6 +86,7 @@ that can disagree about where its bytes are.
    - the path is gone → the edit is dropped, and the session is told.
    - the edit now overlaps one staged before it → the later-staged edit is dropped as conflicted,
      and the session is told (the text moved; it is not a writer bug).
+   Every conflict says which: `gone`, `overlap`, or `unwritable` (the writer refuses on the new bytes).
 4. **Commit.** Each source's preview is written if the disk still holds its base; if not, step 3
    runs first. Afterwards the written bytes are the new base and the index empties for that source.
 
