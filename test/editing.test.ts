@@ -613,3 +613,28 @@ test("a rebase writes the value again, because its spelling can depend on its ne
   assert.equal(await read(memory, "/w.conf"), 'a=1,\nb="3"\n');
   session.close();
 });
+
+// Joining FR-002 (editing FR-008 as amended): a rebase that keeps the range but changes the bytes is reported.
+test("a rebase that respells an edit without moving it says so", async () => {
+  const quoting: Writer = {
+    ...keyValue,
+    write(data, path, value) {
+      const found = keyValue.locate(data, path);
+      if (!found.ok) return found;
+      const lines = text(data.slice(0, found.start)).split("\n");
+      const quoted = (lines[lines.length - 2] ?? "").endsWith(",");
+      return { ok: true, edit: { start: found.start, end: found.end, bytes: bytes(quoted ? `"${String(value)}"` : String(value)) } };
+    },
+  };
+  const memory = createMemoryHost({ "/w.conf": W });
+  const session = await openSession({ host: memory, entry: "/w.conf", handlers: [], writers: [quoting], writable: ["/"] });
+  const id = idOf(session, "/w.conf");
+  await session.stage("/w.conf", "b", "3");
+  const changes = heard(session);
+  memory.write("/w.conf", "a=,\nb=2\n"); // "a=1⏎" and "a=,⏎" are both 4 bytes: b's value stays at 6-7, but its neighbour now ends in a comma
+  await absorbed(session, "/w.conf");
+  assert.deepEqual(session.index().map(e => [e.start, e.end, e.status]), [[6, 7, "staged"]]);
+  assert.deepEqual(changes, [{ added: [], removed: [], changed: [id], edits: [{ source: id, path: "b", outcome: "respelled", start: 6, end: 7 }] }]);
+  assert.equal(text((await session.preview(id))?.bytes ?? new Uint8Array()), 'a=,\nb="3"\n');
+  session.close();
+});

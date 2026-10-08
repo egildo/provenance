@@ -66,6 +66,8 @@ interface Staging {
   preview?: string;
 }
 
+const sameBytes = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((byte, i) => byte === b[i]);
+
 const overlaps = (a: { start: number; end: number }, b: { start: number; end: number }) =>
   (a.start < b.end && b.start < a.end) || (a.start === a.end && b.start === b.end && a.start === b.start);
 
@@ -327,6 +329,7 @@ export async function openSession(options: {
       kept.push({ path: e.path, value: e.value, bytes: again.edit.bytes, start, end, status, ...(disk === undefined ? {} : { disk }) });
       if (!same) notices.push({ source, path: e.path, outcome: "overrides", start, end, disk: now });
       else if (moved) notices.push({ source, path: e.path, outcome: "moved", start, end });
+      else if (!sameBytes(again.edit.bytes, e.bytes)) notices.push({ source, path: e.path, outcome: "respelled", start, end });
     }
     staging.edits = kept;
     staging.base = bytes;

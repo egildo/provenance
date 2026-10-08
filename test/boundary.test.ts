@@ -35,3 +35,16 @@ test("the check itself sees imports", () => {
   assert.ok(imports("node.ts").some(s => s.startsWith("node:")));
   assert.ok(imports("css.ts").includes("postcss-safe-parser"));
 });
+
+// Joining FR-001: Cascata is a development dependency only. The libraries meet by shape.
+test("Cascata is a development dependency, and nothing under src/ names it", () => {
+  const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+  };
+  assert.match(manifest.devDependencies?.["@egildo/cascata"] ?? "", /^\^1\.11\./);
+  assert.equal(manifest.dependencies?.["@egildo/cascata"], undefined);
+  for (const file of files) {
+    assert.ok(!readFileSync(new URL(file, src), "utf8").includes("@egildo/cascata"), `${file} mentions @egildo/cascata`);
+  }
+});

@@ -51,6 +51,7 @@
     "postcss-value-parser": "^4.2.0"
   },
   "devDependencies": {
+    "@egildo/cascata": "^1.11.0",
     "@types/node": "^22",
     "typescript": "^5.9"
   }

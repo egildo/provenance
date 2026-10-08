@@ -116,7 +116,7 @@ interface Preview { readonly bytes: Uint8Array; readonly version: string }   // 
 interface EditNotice {                 // one per edit a rebase moved, found overriding, or dropped
   readonly source: string;
   readonly path: string;
-  readonly outcome: "moved" | "overrides" | "conflicted";
+  readonly outcome: "moved" | "overrides" | "conflicted" | "respelled";   // respelled: same range, new bytes
   readonly start?: number;             // the new range; absent when conflicted
   readonly end?: number;
   readonly disk?: Uint8Array;

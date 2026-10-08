@@ -135,11 +135,14 @@ export interface Change {
   readonly edits?: readonly EditNotice[];
 }
 
-/** One staged edit that a rebase moved, found overriding a newer value, or dropped as conflicted. */
+/**
+ * One staged edit that a rebase moved, found overriding a newer value, dropped as conflicted, or
+ * respelled: it kept its range, but its writer now spells the value differently on the new bytes.
+ */
 export interface EditNotice {
   readonly source: string;
   readonly path: string;
-  readonly outcome: "moved" | "overrides" | "conflicted";
+  readonly outcome: "moved" | "overrides" | "conflicted" | "respelled";
   /** The edit's new byte range in the source's new version; absent when conflicted. */
   readonly start?: number;
   readonly end?: number;
