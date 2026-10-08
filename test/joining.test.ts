@@ -137,6 +137,9 @@ test("case 4: the same value changed on disk is overridden, and the session is t
   const report = await session.commit();
   assert.deepEqual(report.sources[0]?.edits.map(e => [e.outcome, text(e.disk ?? new Uint8Array())]), [["overrode", "3.6"]]);
   assert.equal(await disk(memory), edited("3.4"));
+  // Read back through Cascata (FR-007): the session's 3.4 won, still a decimal, and W1 is as it was.
+  assert.deepEqual(read(bytes(await disk(memory)), "/walls/W2/height"), ["float", 3.4]);
+  assert.deepEqual(read(bytes(await disk(memory)), "/walls/W1/height"), ["float", 3.2]);
   session.close();
 });
 
@@ -194,6 +197,9 @@ test("case 8: a byte-order mark: W1's height is at 28-31, and the mark is still 
   assert.equal(after, "﻿" + edited("3.2", "3.4"));
   assert.deepEqual([...bytes(after).slice(0, 3)], [0xef, 0xbb, 0xbf]);
   onlyTheValueMoved(marked, after, 28, 31, "3.4");
+  // Read back through Cascata (FR-007), which counts the mark and strips it: the value is 3.4, a decimal; W2 is as it was.
+  assert.deepEqual(read(bytes(after), "/walls/W1/height"), ["float", 3.4]);
+  assert.deepEqual(read(bytes(after), "/walls/W2/height"), ["float", 3.2]);
   session.close();
 });
 
