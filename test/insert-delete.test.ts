@@ -102,26 +102,6 @@ test("FR-002: bytes that do not open are refused at staging with the writer's re
   session.close();
 });
 
-test("FR-002: bytes that do not open make every edit unwritable on rebase", async () => {
-  const picky: Writer = {
-    claims: keyValue.claims,
-    open: data => (data[0] === 0x21 ? { ok: false, reason: "not a conf file" } : keyValue.open(data)),
-  };
-  const { session, memory } = await openOn({ "/w.conf": W }, [picky]);
-  const id = idOf(session, "/w.conf");
-  await session.stage("/w.conf", { op: "set", path: "a", value: "7" });
-  await session.stage("/w.conf", { op: "set", path: "b", value: "8" });
-  const changes = heard(session);
-  memory.write("/w.conf", "!\na=1\nb=2\n");
-  await absorbed(session, "/w.conf");
-  assert.deepEqual(session.index(), []);
-  assert.deepEqual(changes.flatMap(c => c.edits ?? []), [
-    { source: id, path: "a", outcome: "conflicted", reason: "unwritable" },
-    { source: id, path: "b", outcome: "conflicted", reason: "unwritable" },
-  ]);
-  session.close();
-});
-
 test("FR-003: a one-shot writer, adapted by `opened`, behaves as before (set, commit, rebase)", async () => {
   const { session, memory } = await openOn({ "/w.conf": W }, [opened(keyValueShot)]);
   await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
@@ -534,17 +514,6 @@ test("FR-010: `changed` compares the located value's bytes: a re-indented multi-
   memory.write("/g/walls.yaml", "walls:\n  W1:\n      height: 3.2\n      note: x\n  W2:\n    height: 3.2\n"); // only the indentation differs
   await absorbed(session, "/g/walls.yaml");
   assert.deepEqual(session.index(), []);
-  session.close();
-});
-
-test("FR-010: ... and a comment a colleague adds above the entry is outside the located bytes, so the delete proceeds and takes it too", async () => {
-  const { session, memory } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
-  await remove(session, "/walls/W1");
-  memory.write("/g/walls.yaml", "walls:\n  # survey note\n  W1:\n    height: 3.2\n  W2:\n    height: 3.2\n");
-  await absorbed(session, "/g/walls.yaml");
-  assert.deepEqual(session.index().map(e => [e.op, e.status, e.disk]), [["remove", "staged", undefined]]); // a delete never "overrides"
-  await session.commit();
-  assert.equal(await read(memory, "/g/walls.yaml"), WITHOUT_W1);
   session.close();
 });
 

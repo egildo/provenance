@@ -34,7 +34,7 @@ interface Session {
   addRoot(location: string): Promise<void>;
   removeRoot(location: string): Promise<void>;
   onChange(listener: (change: Change) => void): () => void;
-  stage(location: string, path: string, value: EditValue): Promise<StageResult>;   // editing: below
+  stage(location: string, operation: EditOperation): Promise<StageResult>;   // editing: below; insert-delete
   index(): readonly StagedEdit[];
   unstage(location: string, path?: string): Promise<void>;
   preview(id: string): Promise<Preview | undefined>;
@@ -88,46 +88,67 @@ previewing and committing are session work, serialized and rolled back like any 
 resolves; a throw rejects and leaves the session as it was).
 
 ```ts
-interface Writer {                     // pure, like a handler; path and value are the format's own
+interface Writer {                     // pure, like a handler; paths and values are the format's own (insert-delete)
   claims(location: string): boolean;
-  locate(bytes: Uint8Array, path: string):
-    | { readonly ok: true; readonly start: number; readonly end: number }
-    | { readonly ok: false; readonly reason: string };
-  write(bytes: Uint8Array, path: string, value: EditValue):
-    | { readonly ok: true; readonly edit: { readonly start: number; readonly end: number; readonly bytes: Uint8Array } }
-    | { readonly ok: false; readonly reason: string };
+  open(bytes: Uint8Array): { readonly ok: true; readonly document: WriterDocument } | WriterRefusal;
 }
 
-/** A scalar, the same union as Cascata's `EditValue`; the first slice sets values only (fixes-0.5). */
-type EditValue = string | number | bigint | boolean | null;
+interface WriterDocument {             // the bytes opened once; every answer is against them
+  locate(path: string): { readonly ok: true; readonly start: number; readonly end: number } | WriterRefusal;
+  write(path: string, value: EditData): WriterWriteResult;
+  add?(path: string, value: EditData): WriterWriteResult;          // absent: the writer cannot insert
+  remove?(path: string): WriterWriteResult;                        // absent: the writer cannot delete
+  inside?(path: string, within: string): boolean;                  // absent: nothing is inside anything
+  amend?(staged: { readonly path: string; readonly value: EditData }, operation: EditOperation): AmendResult;
+  shifted?(path: string, newer: WriterDocument): boolean;          // absent: no shift guard
+}
+
+type WriterWriteResult = { readonly ok: true; readonly edit: { readonly start: number; readonly end: number; readonly bytes: Uint8Array } } | WriterRefusal;
+/** `code` (fixes FIX-003): the session reads `edit-target-exists` (the key is there), `edit-target-absent` and `edit-parent-scalar` (gone). */
+type WriterRefusal = { readonly ok: false; readonly reason: string; readonly code?: string };
+type AmendResult = { readonly inside: false } | { readonly inside: true; readonly ok: true; readonly value: EditData } | { readonly inside: true; readonly ok: false; readonly reason: string };
+
+/** The same union, under the same name, as Cascata's (a `Map` for a mapping, never a plain object). */
+type EditData = string | number | bigint | boolean | null | readonly EditData[] | ReadonlyMap<string, EditData>;
+/** JSON Patch's operation object, with Cascata's verb names. */
+type EditOperation = { readonly op: "set" | "add"; readonly path: string; readonly value: EditData } | { readonly op: "remove"; readonly path: string };
 
 type StageResult = { readonly ok: true } | { readonly ok: false; readonly reason: string };
 
 interface StagedEdit {
   readonly source: string;             // a source id
   readonly path: string;
-  readonly value: EditValue;
+  readonly op: "set" | "add" | "remove";
+  readonly value?: EditData;           // absent for remove
   readonly base: string;               // the base version the byte address is against
   readonly start: number;              // bytes in the base version
   readonly end: number;
   readonly status: "staged" | "overrides";
   readonly disk?: Uint8Array;          // what an overriding edit will replace
+  readonly waiting?: string;           // while the newest version does not open: the writer's words (FIX-001)
 }
 
 interface Preview { readonly bytes: Uint8Array; readonly version: string }   // version: SHA-256, hex
 
-interface EditNotice {                 // one per edit a rebase moved, found overriding, or dropped
+interface EditNotice {                 // one per edit a rebase moved, found overriding, dropped, or left waiting
   readonly source: string;
   readonly path: string;
-  readonly outcome: "moved" | "overrides" | "conflicted" | "respelled";   // respelled: same range, new bytes
+  readonly outcome: "moved" | "overrides" | "conflicted" | "respelled" | "waiting";   // respelled: same range, new bytes
   readonly reason?: ConflictReason;    // present exactly when conflicted
-  readonly start?: number;             // the new range; absent when conflicted
+  readonly start?: number;             // the new range; absent when conflicted or waiting
   readonly end?: number;
   readonly disk?: Uint8Array;
+  readonly detail?: string;            // for waiting: why the new version does not open
 }
 
-/** Why a staged edit was dropped: its path is no longer found (or its source left the graph); its new range overlaps an earlier-staged edit's; its writer refuses to write the value on the new bytes. */
-type ConflictReason = "gone" | "overlap" | "unwritable";
+/**
+ * Why a staged edit was dropped: its path is no longer found, or its source left the graph (`gone`); its new range
+ * overlaps an earlier-staged edit's (`overlap`); its writer refuses on the new bytes (`unwritable`); an insert's key
+ * was added on disk (`exists`); a deleted entry was changed on disk, attached comments included (`changed`); a list
+ * along its path changed length (`shifted`). A set overrides a value changed on disk; an insert or a delete never
+ * overwrites a colleague's work on the same entry.
+ */
+type ConflictReason = "gone" | "overlap" | "unwritable" | "exists" | "changed" | "shifted";
 
 interface CommitReport { readonly sources: readonly SourceCommit[] }
 interface SourceCommit {

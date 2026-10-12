@@ -30,7 +30,9 @@ Written with a capital, Provenance is the library.
 
 **Edge.** A dependency from a place in one source to another source: `from` (the address of the span that asks), `request` (as written), `target` (a source, or unresolved), `kind` (requires or candidate), and `origin` (declared or observed).
 
-**Edit value.** What a set edit writes: a string, a number, a big integer, a boolean or null — the same union in Provenance and Cascata, so a writer from either fits the other (`EditValue`). *(editing)*
+**Edit value.** What a set or an insert writes: a string, a number, a big integer, a boolean or null, or a list or a map of them — the same union in Provenance and Cascata, so a writer from either fits the other (`EditData`). *(editing)* *Amended 2026-10-12 (`specs/insert-delete/`): it was a scalar (`EditValue`).*
+
+**Waiting.** The state of a staged edit whose source's newest version does not open (a file saved mid-typing): it stays staged against its base, and rebases when a version that opens arrives. A commit of that source is refused meanwhile. *(insert-delete fixes)*
 
 **Edit.** A change staged against a source: either a text edit, which carries **two addresses** — an address in the base version plus the replacement bytes, and a semantic address (a path in the format's own terms, and the intended value) — or a file operation, which is create, delete or rename. *Amended 2026-10-08 (`write-back.md`): the semantic address.* *(editing)*
 

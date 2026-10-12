@@ -104,6 +104,8 @@ export interface StagedEdit {
   readonly status: "staged" | "overrides";
   /** The bytes of the value on disk that an overriding edit will replace. */
   readonly disk?: Uint8Array;
+  /** Present while the source's newest version does not open: the writer's words. The edit waits against its base (FIX-001). */
+  readonly waiting?: string;
 }
 
 /** A source's base plus its staged edits, with the content hash that names it as a version. */
@@ -165,12 +167,14 @@ export interface Change {
 
 /**
  * One staged edit that a rebase moved, found overriding a newer value, dropped as conflicted, or
- * respelled: it kept its range, but its writer now spells the value differently on the new bytes.
+ * respelled: it kept its range, but its writer now spells the value differently on the new bytes. Or
+ * `waiting`: the source's new version does not open, so the edit stays staged against its base until a
+ * version that opens arrives (specs/insert-delete/fixes.md FIX-001).
  */
 export interface EditNotice {
   readonly source: string;
   readonly path: string;
-  readonly outcome: "moved" | "overrides" | "conflicted" | "respelled";
+  readonly outcome: "moved" | "overrides" | "conflicted" | "respelled" | "waiting";
   /** Why the edit was dropped; present exactly when `outcome` is `conflicted`. */
   readonly reason?: ConflictReason;
   /** The edit's new byte range in the source's new version; absent when conflicted. */
@@ -178,6 +182,8 @@ export interface EditNotice {
   readonly end?: number;
   /** The bytes on disk that an overriding edit will replace. */
   readonly disk?: Uint8Array;
+  /** For `waiting`: the writer's words for why the new version does not open. */
+  readonly detail?: string;
 }
 
 export interface Handler {
@@ -214,16 +220,23 @@ export interface Writer {
   open(bytes: Uint8Array): WriterOpenResult;
 }
 
-export type WriterOpenResult = { readonly ok: true; readonly document: WriterDocument } | { readonly ok: false; readonly reason: string };
+/**
+ * A writer's refusal: its words, and optionally a code naming why (fixes FIX-003). The session reads three codes, Cascata's
+ * names for them: `edit-target-exists` (the key is there), `edit-target-absent` and `edit-parent-scalar` (the place is gone).
+ * Any other code, or none, is the writer's own business.
+ */
+export type WriterRefusal = { readonly ok: false; readonly reason: string; readonly code?: string };
 
-export type WriterLocateResult = { readonly ok: true; readonly start: number; readonly end: number } | { readonly ok: false; readonly reason: string };
+export type WriterOpenResult = { readonly ok: true; readonly document: WriterDocument } | WriterRefusal;
+
+export type WriterLocateResult = { readonly ok: true; readonly start: number; readonly end: number } | WriterRefusal;
 export type AmendResult =
   | { readonly inside: false }
   | { readonly inside: true; readonly ok: true; readonly value: EditData }
   | { readonly inside: true; readonly ok: false; readonly reason: string };
 export type WriterWriteResult =
   | { readonly ok: true; readonly edit: { readonly start: number; readonly end: number; readonly bytes: Uint8Array } }
-  | { readonly ok: false; readonly reason: string };
+  | WriterRefusal;
 
 /** A document a writer has parsed once. */
 export interface WriterDocument {

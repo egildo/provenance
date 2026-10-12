@@ -4,6 +4,7 @@
 import { byteOffsets } from "./offsets.ts";
 import { hasScheme, resolve } from "./resolvers.ts";
 import type {
+  ConflictReason,
   Change,
   Edge,
   EditNotice,
@@ -69,7 +70,13 @@ interface Staging {
   edits: Staged[];
   /** The version of the last preview analysed, held while these edits stay as they are. */
   preview?: string;
+  /** The writer's words while the newest version on disk does not open; the edits wait against `base` (FIX-001). */
+  waiting?: string;
 }
+
+/** The refusal codes the session reads (FIX-003), Cascata's names: the key is there; the place is gone. */
+const EXISTS_CODE = "edit-target-exists";
+const GONE_CODES: ReadonlySet<string> = new Set(["edit-target-absent", "edit-parent-scalar"]);
 
 const sameBytes = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((byte, i) => byte === b[i]);
 
@@ -330,10 +337,13 @@ export async function openSession(options: {
     // One opening of the new version serves every edit; bytes that do not open leave none of them writable.
     const opening = staging.writer.open(bytes);
     if (!opening.ok) {
-      for (const e of staging.edits) notices.push({ source, path: e.path, outcome: "conflicted", reason: "unwritable" });
-      staged.delete(key);
+      // A version that does not open (a file saved mid-typing) costs no staged edit: they wait against their base
+      // until a version that opens arrives, and rebase onto that one (FIX-001, the owner's ruling).
+      staging.waiting = opening.reason;
+      for (const e of staging.edits) notices.push({ source, path: e.path, outcome: "waiting", detail: opening.reason });
       return;
     }
+    staging.waiting = undefined;
     const doc = opening.document;
     for (const e of staging.edits) {
       // The shift guard (FR-013) comes first: through a list that changed length, the path may name another item.
@@ -364,23 +374,26 @@ export async function openSession(options: {
           continue;
         }
         checkRange(bytes.length, found.start, found.end, "the writer");
-        const was = staging.doc.locate(e.path);
-        if (!was.ok || !sameBytes(bytes.subarray(found.start, found.end), staging.base.subarray(was.start, was.end))) {
+        again = doc.remove ? doc.remove(e.path) : { ok: false, reason: "no remove" };
+        if (!again.ok) {
+          notices.push({ source, path: e.path, outcome: "conflicted", reason: GONE_CODES.has(again.code ?? "") ? "gone" : "unwritable" });
+          continue;
+        }
+        checkRange(bytes.length, again.edit.start, again.edit.end, "the writer");
+        // What the delete cuts now must be what it cut when it was staged, attached comments included (FIX-002):
+        // anything a colleague put there is theirs, and the delete yields.
+        if (!sameBytes(bytes.subarray(again.edit.start, again.edit.end), staging.base.subarray(e.start, e.end))) {
           notices.push({ source, path: e.path, outcome: "conflicted", reason: "changed" });
           continue;
         }
-        again = doc.remove ? doc.remove(e.path) : { ok: false, reason: "no remove" };
-        if (!again.ok) {
-          notices.push({ source, path: e.path, outcome: "conflicted", reason: "unwritable" });
-          continue;
-        }
       } else {
-        // An insert (FR-007). The writer says why it refuses only in words, and the session reads no path,
-        // so it asks the new version whether the key is there: if so a colleague added it (`exists`), and if
-        // not the place it went into is gone.
+        // An insert (FR-007). A refusal's code says why (FIX-003); a writer that gives none is asked whether the key is
+        // there now: if so a colleague added it (`exists`), and if not the place it went into is gone.
         again = doc.add ? doc.add(e.path, e.value) : { ok: false, reason: "no add" };
         if (!again.ok) {
-          notices.push({ source, path: e.path, outcome: "conflicted", reason: !doc.add ? "unwritable" : doc.locate(e.path).ok ? "exists" : "gone" });
+          const code = again.code;
+          const reason: ConflictReason = !doc.add ? "unwritable" : code === undefined ? (doc.locate(e.path).ok ? "exists" : "gone") : code === EXISTS_CODE ? "exists" : GONE_CODES.has(code) ? "gone" : "unwritable";
+          notices.push({ source, path: e.path, outcome: "conflicted", reason });
           continue;
         }
       }
@@ -785,6 +798,7 @@ export async function openSession(options: {
     const first = notices.length;
     const version = await sha256(read.bytes);
     if (version !== staging.version) rebase(key, staging, read.bytes, version);
+    if (staging.waiting !== undefined && staged.get(key) === staging) return nothing("refused", `the file on disk does not open: ${staging.waiting}`);
     const dropped = notices.slice(first).filter(n => n.outcome === "conflicted" && n.source === source);
     const edits: SourceCommit["edits"][number][] = dropped.map(n => ({ path: n.path, outcome: "conflicted", ...(n.reason === undefined ? {} : { reason: n.reason }) }));
     const remaining = staged.get(key);
@@ -843,6 +857,7 @@ export async function openSession(options: {
             end: e.end,
             status: e.status,
             ...(e.disk === undefined ? {} : { disk: e.disk }),
+            ...(staging.waiting === undefined ? {} : { waiting: staging.waiting }),
           }),
         ),
       ),

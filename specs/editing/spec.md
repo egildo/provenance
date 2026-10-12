@@ -19,6 +19,8 @@ way the `include` handler tests the kernel. The real YAML and JSON plug-in is Ca
 
 ## Requirements
 
+*Superseded in part by [`specs/insert-delete/`](../insert-delete/spec.md): the writer is `claims` and `open`; `stage` takes an operation; a staged edit carries its `op`; values are `EditData`.*
+
 **The plug-in and the host**
 
 - **FR-001** A **writer** is the editing half of a format plug-in (#5):

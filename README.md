@@ -107,8 +107,10 @@ until they heal, and reports what changed as files change. See
 Since 0.5.0 it also **writes back**: a tool stages an edit to a value, sees a preview, and commits it;
 the edit lands in exactly the bytes of that value, every other byte untouched, and survives the
 file changing on disk in the meantime ([the design](docs/write-back.md),
-[the editing spec](specs/editing/spec.md)). Writing is granted, never ambient. The first slice
-sets values only; format plug-ins come from outside — Cascata's YAML and JSON writers are the first.
+[the editing spec](specs/editing/spec.md)). Writing is granted, never ambient. Since 0.6.0 it
+also inserts and deletes entries ([insert-delete](specs/insert-delete/spec.md)), and an edit staged on a file that a
+colleague is mid-way through saving waits for it to parse again. Format plug-ins come from outside —
+Cascata's YAML and JSON writers are the first.
 
 What's next: **stamps** (outputs that carry their source address, so an edit on a rendered page
 finds its way back), **Markdown units** and a **CSS writer**, then **observation** — see
