@@ -152,3 +152,31 @@ Cascata or anything not allowed by the role table in `boundary.test.ts`.
   type narrowing and fails `tsc`; use `kept.length > 99 && cond`.
 - The sandbox now has tests for a symlinked root and for letter case (macOS only; skipped
   elsewhere, by probing). Windows drive letters and a root that does not exist yet remain untested.
+
+## Addendum, 2026-10-12 (insert and delete; `specs/insert-delete/report.md`)
+
+- **Where the new logic is.** `stageEdit` (session.ts) decides in this order: the source's checks; open the
+  base (or take `staging.doc`); `within` (the writer's `inside` says the path lies in a staged edit: refuse
+  under a delete, else `amend` then `restage` in place); `same` is a staged insert (amend wholesale, or a
+  remove unstages); `effective` (a set or add on a staged delete becomes a set); `perform` (one function that
+  asks the opened document for set, add or remove, or says it lacks the verb); overlap; place last. `rebase`
+  is a loop with one branch per op after the shift guard; all conflict reasons are decided there. `Staged` is
+  a union (`remove` has no `value`); `index()` omits `value` for it.
+- **`Staging.doc` is a cache, not state.** Dropping it from the rollback snapshot turns nothing red, because
+  `stageEdit` reopens from `base` when it is missing. A doc of the *wrong version* does (the getter sabotage
+  in the report). Keep it in the snapshot anyway.
+- **`exists` and `gone` for an insert are decided by `locate`, not by the writer's words** (a refusal is only a
+  string; Provenance reads no path). Do not "improve" this by matching reason text. A structured refusal code
+  from the writers is the real fix and belongs in the Writer shape, with Cascata.
+- **Wrapping Cascata's documents breaks `shifted`.** Cascata's `shifted(path, newer)` throws `TypeError` for a
+  `newer` it did not open; the session passes the writer's own document object. A wrapper must forward `shifted`
+  with the *inner* document of `newer`, or leave `shifted` off (the joining test's wrapper leaves it off).
+- **Sabotaging Cascata's code** (the `startsWith` in `node_modules/@egildo/cascata/dist/adapters/amend.js`)
+  works, but copy the file to `/tmp` first and `cmp` it after: `npm test` does not notice a leftover edit.
+- **Test layout.** `test/insert-delete.test.ts` holds everything new, by Part (A to F, then rollback and one
+  real-disk test). `test/helpers.ts`: `opened(oneShot)` adapts the old `locate`/`write` shape, `keyValueShot` is
+  the old key=value object, `keyValue` is `opened(keyValueShot)`. The counting writer counts `open`, never time.
+- **Cascata 1.16 changed `editTarget`'s result** (`diagnostics: []`); joining's FR-005 test pins it exactly.
+- **Closed from "Open edges"**: insert and delete are built, and a conflict has had a reason since the 0.5
+  fixes round 2. Still open: the notice carries no writer text (`unwritable`/`gone` lose the words); a file a
+  colleague saves half-typed (does not parse) drops every staged edit as `unwritable`.
