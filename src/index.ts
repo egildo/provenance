@@ -216,6 +216,10 @@ export interface Writer {
 export type WriterOpenResult = { readonly ok: true; readonly document: WriterDocument } | { readonly ok: false; readonly reason: string };
 
 export type WriterLocateResult = { readonly ok: true; readonly start: number; readonly end: number } | { readonly ok: false; readonly reason: string };
+export type AmendResult =
+  | { readonly inside: false }
+  | { readonly inside: true; readonly ok: true; readonly value: EditData }
+  | { readonly inside: true; readonly ok: false; readonly reason: string };
 export type WriterWriteResult =
   | { readonly ok: true; readonly edit: { readonly start: number; readonly end: number; readonly bytes: Uint8Array } }
   | { readonly ok: false; readonly reason: string };
@@ -230,6 +234,16 @@ export interface WriterDocument {
   add?(path: string, value: EditData): WriterWriteResult;
   /** The splice that deletes the entry at `path`, with the comments attached to it; answers what `write` answers. Absent: the writer cannot delete. */
   remove?(path: string): WriterWriteResult;
+  /**
+   * Whether `path` lies strictly below `within`, in the format's own path language. Provenance reads no path,
+   * so this is how it learns that an edit lands inside a staged edit. Absent: nothing is treated as inside.
+   */
+  inside?(path: string, within: string): boolean;
+  /**
+   * `operation` applied inside the value staged at `staged.path`: the amended value, a refusal in the writer's
+   * words, or `{ inside: false }` when the operation's path is not below it. Pure; the staged value is not changed.
+   */
+  amend?(staged: { readonly path: string; readonly value: EditData }, operation: EditOperation): AmendResult;
 }
 
 export interface Resolver {

@@ -79,6 +79,14 @@ const sameBytes = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.e
  */
 const overlaps = (a: { start: number; end: number }, b: { start: number; end: number }) => a.start < b.end && b.start < a.end;
 
+/** A writer is still pure, so one function asks its opened document to do an operation, or says the document cannot. */
+function perform(doc: WriterDocument, key: string, operation: EditOperation): WriterWriteResult {
+  const cannot = (verb: "add" | "remove") => ({ ok: false as const, reason: `the writer for ${key} cannot ${verb}: its document has no ${verb}` });
+  if (operation.op === "remove") return doc.remove ? doc.remove(operation.path) : cannot("remove");
+  if (operation.op === "add") return doc.add ? doc.add(operation.path, operation.value) : cannot("add");
+  return doc.write(operation.path, operation.value);
+}
+
 /** A writer's range outside the bytes it was given is its bug, like an index `byteOffsets` cannot convert. */
 function checkRange(length: number, start: number, end: number, what: string) {
   if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end > length) {
@@ -692,22 +700,58 @@ export async function openSession(options: {
       if (!opening.ok) return { ok: false, reason: opening.reason };
       doc = opening.document;
     }
-    const cannot = (op: "add" | "remove") => ({ ok: false as const, reason: `the writer for ${key} cannot ${op}: its document has no ${op}` });
-    let written: WriterWriteResult;
-    if (operation.op === "remove") {
-      if (!doc.remove) return cannot("remove");
-      written = doc.remove(path);
-    } else if (operation.op === "add") {
-      if (!doc.add) return cannot("add");
-      written = doc.add(path, operation.value);
-    } else written = doc.write(path, operation.value);
-    if (!written.ok) return { ok: false, reason: written.reason };
+    const others = staging?.edits ?? [];
+    const same = others.find(e => e.path === path);
+    const inside = doc.inside;
+    // What lies inside what is the writer's to say: its path language, its reader (ruling 8). At most one staged
+    // edit can contain a path, since an edit inside another amends it instead of joining the index.
+    const within = inside && others.find(e => e.path !== path && inside.call(doc, path, e.path));
+
+    /** Stages the edit again with a new value, in the place it held; the writer's refusal is the caller's. */
+    const restage = (edit: Staged & { op: "set" | "add" }, value: EditData): StageResult => {
+      const again = perform(doc, key, { op: edit.op, path: edit.path, value });
+      if (!again.ok) return { ok: false, reason: again.reason };
+      const { start, end, bytes } = again.edit;
+      checkRange(base.length, start, end, "the writer");
+      const clash = others.find(e => e !== edit && overlaps(e, again.edit));
+      if (clash) return { ok: false, reason: `the edit overlaps the staged edit at ${clash.path}` };
+      if (staging) {
+        staging.edits = staging.edits.map(e => (e === edit ? { ...edit, value, start, end, bytes } : e));
+        staging.preview = undefined;
+      }
+      return { ok: true };
+    };
+
+    if (within) {
+      // An edit inside a staged edit (FR-011): inside a delete it is refused; inside a set or an insert it
+      // amends the staged value, which the writer then writes again, so the bytes stay the writer's.
+      if (within.op === "remove") return { ok: false, reason: `the entry at ${within.path} is staged for removal` };
+      if (!doc.amend) return { ok: false, reason: `the writer for ${key} cannot amend the staged edit at ${within.path}: its document has no amend` };
+      const amended = doc.amend({ path: within.path, value: within.value }, operation);
+      if (amended.inside) return amended.ok ? restage(within, amended.value) : { ok: false, reason: amended.reason };
+    }
+    if (staging && same?.op === "add") {
+      // On a staged insert's own path: a set or an add changes the insert wholesale, a remove undoes it.
+      if (operation.op !== "remove") return restage(same, operation.value);
+      staging.edits = staging.edits.filter(e => e !== same);
+      staging.preview = undefined;
+      if (staging.edits.length === 0) staged.delete(key);
+      return { ok: true };
+    }
+    // On a staged delete's path, a set or an add is a set of the entry, which is in the base; otherwise the
+    // operation is staged as it came, and a staged edit at its path (a set, a delete) is replaced.
+    const effective: EditOperation = same?.op === "remove" && operation.op !== "remove" ? { op: "set", path, value: operation.value } : operation;
+    const written = perform(doc, key, effective);
+    if (!written.ok) {
+      const blind = !doc.inside && others.some(e => e.op === "add");
+      return { ok: false, reason: blind ? `${written.reason}; the writer's document has no inside, so it cannot say whether the path lies inside a staged insert` : written.reason };
+    }
     const { start, end, bytes } = written.edit;
     checkRange(base.length, start, end, "the writer");
-    const clash = (staging?.edits ?? []).find(e => e.path !== path && overlaps(e, written.edit));
+    const clash = others.find(e => e.path !== path && overlaps(e, written.edit));
     if (clash) return { ok: false, reason: `the edit overlaps the staged edit at ${clash.path}` };
     if (!staging) staged.set(key, (staging = { writer, version: node.version, base, doc, edits: [] }));
-    const edit: Staged = { path, start, end, bytes, status: "staged", ...(operation.op === "remove" ? { op: "remove" as const } : { op: operation.op, value: operation.value }) };
+    const edit: Staged = { path, start, end, bytes, status: "staged", ...(effective.op === "remove" ? { op: "remove" as const } : { op: effective.op, value: effective.value }) };
     // Replaced, the edit goes last: the list is in the order edits were staged, which a rebase reads.
     staging.edits = [...staging.edits.filter(e => e.path !== path), edit];
     staging.preview = undefined;

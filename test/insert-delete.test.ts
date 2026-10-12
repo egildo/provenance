@@ -452,12 +452,12 @@ test("FR-009: a writer whose document has no remove refuses a delete by name", a
   session.close();
 });
 
-test("FR-009: an edit over a staged delete's range is an overlap, refused", async () => {
+test("FR-009: a delete over a staged edit's range is an overlap, refused", async () => {
   const { session } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
-  await remove(session, "/walls/W1");
-  const result = await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W1/height", value: 3.4 }); // 25-28 lies inside 7-29
+  await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W1/height", value: 3.4 }); // 25-28 lies inside 7-29
+  const result = await remove(session, "/walls/W1");
   assert.equal(result.ok, false);
-  assert.match(result.ok ? "" : result.reason, /overlaps the staged edit at \/walls\/W1/);
+  assert.match(result.ok ? "" : result.reason, /overlaps the staged edit at \/walls\/W1\/height/);
   session.close();
 });
 
@@ -563,5 +563,192 @@ test("FR-010: a writer that refuses the removal on the new version makes the del
   memory.write("/w.conf", "!\na=1\nb=2\n");
   await absorbed(session, "/w.conf");
   assert.deepEqual(changes.flatMap(c => c.edits ?? []), [{ source: id, path: "a", outcome: "conflicted", reason: "unwritable" }]);
+  session.close();
+});
+
+// ---- Part E: edits inside staged edits (FR-011, FR-012) ----
+
+const stagedFor = (path: string) => `the entry at ${path} is staged for removal`;
+const entries = (session: Session) => session.index().map(e => [e.op, e.path, e.start, e.end]);
+/** What Cascata itself answers for an amend: the staging refusal must be exactly this. */
+function amendReason(path: string, value: EditData, operation: Parameters<NonNullable<ReturnType<typeof yamlDocument>["amend"]>>[1]) {
+  const result = yamlDocument().amend?.({ path, value }, operation);
+  assert.ok(result && result.inside && !result.ok);
+  return result.reason;
+}
+function yamlDocument() {
+  const opened = yamlWriter().open(bytes(WALLS));
+  assert.ok(opened.ok);
+  return opened.document;
+}
+
+test("FR-011, staged set, same path: a new set replaces it and goes last; a remove replaces it", async () => {
+  const { session } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+  await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W1/height", value: 3.4 });
+  await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W2/height", value: 3.5 });
+  await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W1/height", value: 3.6 });
+  assert.deepEqual(session.index().map(e => [e.path, e.value]), [["/walls/W2/height", 3.5], ["/walls/W1/height", 3.6]]);
+  await session.unstage("/g/walls.yaml");
+  await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W2", value: wall(3.4) });
+  assert.deepEqual(await remove(session, "/walls/W2"), { ok: true });
+  assert.deepEqual(entries(session), [["remove", "/walls/W2", 29, 51]]); // `  W2:⏎    height: 3.2⏎`, the last two lines
+  assert.equal(await previewText(session, "/g/walls.yaml"), "walls:\n  W1:\n    height: 3.2\n");
+  session.close();
+});
+
+test("FR-011, staged set (a scalar), edit inside: refused, with the writer's own words", async () => {
+  const { session } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+  await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W2/height", value: 3.4 });
+  const operation = { op: "set", path: "/walls/W2/height/x", value: 1 } as const;
+  assert.deepEqual(await session.stage("/g/walls.yaml", operation), { ok: false, reason: amendReason("/walls/W2/height", 3.4, operation) });
+  assert.deepEqual(entries(session), [["set", "/walls/W2/height", 47, 50]]);
+  session.close();
+});
+
+test("FR-011, staged set (a container), edit inside: amends the staged value through the writer; the order and the bytes follow", async () => {
+  const { session, memory } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+  const f = (...pairs: [string, number][]) => new Map<string, EditData>(pairs);
+  await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W2", value: f(["height", 3.4]) });
+  assert.deepEqual(await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W2/height", value: 3.6 }), { ok: true });
+  assert.deepEqual(session.index().map(e => [e.op, e.path, e.start, e.end, e.value]), [["set", "/walls/W2", 39, 50, f(["height", 3.6])]]);
+  assert.equal(await previewText(session, "/g/walls.yaml"), "walls:\n  W1:\n    height: 3.2\n  W2:\n    height: 3.6\n");
+  assert.deepEqual(await session.stage("/g/walls.yaml", { op: "add", path: "/walls/W2/thickness", value: 0.2 }), { ok: true });
+  assert.equal(await previewText(session, "/g/walls.yaml"), "walls:\n  W1:\n    height: 3.2\n  W2:\n    height: 3.6\n    thickness: 0.2\n");
+  assert.deepEqual(await session.stage("/g/walls.yaml", { op: "remove", path: "/walls/W2/thickness" }), { ok: true });
+  assert.equal(await previewText(session, "/g/walls.yaml"), "walls:\n  W1:\n    height: 3.2\n  W2:\n    height: 3.6\n");
+  await session.commit();
+  assert.equal(await read(memory, "/g/walls.yaml"), "walls:\n  W1:\n    height: 3.2\n  W2:\n    height: 3.6\n");
+  session.close();
+});
+
+test("FR-011, staged insert, same path: a new set or add amends the insert wholesale, and it keeps its place in staging order", async () => {
+  const { session, memory } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+  await add(session, "/walls/W3", wall(3.2));
+  await add(session, "/walls/W4", wall(3.4));
+  assert.deepEqual(await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W3", value: wall(3.3) }), { ok: true });
+  assert.deepEqual(entries(session), [["add", "/walls/W3", 51, 51], ["add", "/walls/W4", 51, 51]]); // still the first, though restaged
+  assert.equal(await previewText(session, "/g/walls.yaml"), WALLS + "  W3:\n    height: 3.3\n" + W4);
+  assert.deepEqual(await add(session, "/walls/W3", wall(3.1)), { ok: true });
+  assert.equal(await previewText(session, "/g/walls.yaml"), WALLS + "  W3:\n    height: 3.1\n" + W4);
+  await session.commit();
+  assert.equal(await read(memory, "/g/walls.yaml"), WALLS + "  W3:\n    height: 3.1\n" + W4);
+  session.close();
+});
+
+test("FR-011, staged insert, same path: removing the inserted entry unstages it", async () => {
+  const { session } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+  await add(session, "/walls/W3", wall(3.2));
+  await add(session, "/walls/W4", wall(3.4));
+  assert.deepEqual(await remove(session, "/walls/W3"), { ok: true });
+  assert.deepEqual(entries(session), [["add", "/walls/W4", 51, 51]]);
+  assert.equal(await previewText(session, "/g/walls.yaml"), WALLS + W4);
+  assert.deepEqual(await remove(session, "/walls/W4"), { ok: true });
+  assert.deepEqual(session.index(), []);
+  assert.equal(await session.preview(idOf(session, "/g/walls.yaml")), undefined);
+  assert.deepEqual(await session.commit(), { sources: [] });
+  session.close();
+});
+
+test("FR-011, staged insert, edit inside: set, add and remove are applied to the staged value, with Cascata's meanings", async () => {
+  const { session } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+  const f = (...pairs: [string, number][]) => new Map<string, EditData>(pairs);
+  await add(session, "/walls/W3", f(["height", 3.2]));
+  assert.deepEqual(await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W3/height", value: 3.4 }), { ok: true });
+  assert.equal(await previewText(session, "/g/walls.yaml"), WALLS + "  W3:\n    height: 3.4\n");
+  assert.deepEqual(await session.stage("/g/walls.yaml", { op: "add", path: "/walls/W3/thickness", value: 0.2 }), { ok: true });
+  assert.equal(await previewText(session, "/g/walls.yaml"), WALLS + "  W3:\n    height: 3.4\n    thickness: 0.2\n");
+  assert.deepEqual(session.index().map(e => e.value), [f(["height", 3.4], ["thickness", 0.2])]);
+  // add creates: an existing key inside the staged value is refused, in Cascata's words
+  const again = { op: "add", path: "/walls/W3/thickness", value: 0.3 } as const;
+  assert.deepEqual(await session.stage("/g/walls.yaml", again), { ok: false, reason: amendReason("/walls/W3", f(["height", 3.4], ["thickness", 0.2]), again) });
+  // set changes: an absent key is refused
+  const absent = { op: "set", path: "/walls/W3/nope", value: 1 } as const;
+  assert.deepEqual(await session.stage("/g/walls.yaml", absent), { ok: false, reason: amendReason("/walls/W3", f(["height", 3.4], ["thickness", 0.2]), absent) });
+  assert.deepEqual(await session.stage("/g/walls.yaml", { op: "remove", path: "/walls/W3/height" }), { ok: true });
+  assert.equal(await previewText(session, "/g/walls.yaml"), WALLS + "  W3:\n    thickness: 0.2\n");
+  // removing the last key leaves a staged insert of an empty container
+  assert.deepEqual(await session.stage("/g/walls.yaml", { op: "remove", path: "/walls/W3/thickness" }), { ok: true });
+  assert.deepEqual(session.index().map(e => [e.op, e.value]), [["add", f()]]);
+  assert.equal(await previewText(session, "/g/walls.yaml"), WALLS + "  W3: {}\n");
+  session.close();
+});
+
+test("FR-011, staged delete, same path: a set or an add becomes a set of the entry; a remove replaces it", async () => {
+  const { session } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+  await remove(session, "/walls/W1");
+  // `height: 3.2` under W1 is bytes 17-28
+  assert.deepEqual(await add(session, "/walls/W1", wall(3.0)), { ok: true });
+  assert.deepEqual(session.index().map(e => [e.op, e.path, e.start, e.end, e.value]), [["set", "/walls/W1", 17, 28, wall(3.0)]]);
+  assert.equal(await previewText(session, "/g/walls.yaml"), "walls:\n  W1:\n    height: 3.0\n  W2:\n    height: 3.2\n");
+  assert.deepEqual(await remove(session, "/walls/W1"), { ok: true });
+  assert.deepEqual(entries(session), [["remove", "/walls/W1", 7, 29]]);
+  assert.deepEqual(await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W1", value: wall(2.9) }), { ok: true });
+  assert.deepEqual(entries(session), [["set", "/walls/W1", 17, 28]]);
+  assert.equal(await previewText(session, "/g/walls.yaml"), "walls:\n  W1:\n    height: 2.9\n  W2:\n    height: 3.2\n");
+  session.close();
+});
+
+test("FR-011, staged delete, edit inside: refused, the entry is staged for removal", async () => {
+  const { session } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+  await remove(session, "/walls/W1");
+  for (const operation of [
+    { op: "set", path: "/walls/W1/height", value: 3.4 },
+    { op: "add", path: "/walls/W1/thickness", value: 0.2 },
+    { op: "remove", path: "/walls/W1/height" },
+  ] as const) {
+    assert.deepEqual(await session.stage("/g/walls.yaml", operation), { ok: false, reason: stagedFor("/walls/W1") }, operation.op);
+  }
+  assert.deepEqual(entries(session), [["remove", "/walls/W1", 7, 29]]);
+  session.close();
+});
+
+test("FR-012: a path that merely starts like a staged path is beside it, not inside it", async () => {
+  const { session } = await openOn({ "/g/walls.yaml": "walls:\n  W3:\n    height: 3.2\n  W30:\n    height: 3.2\n" }, [yamlWriter()]);
+  await remove(session, "/walls/W3");
+  assert.deepEqual(await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W30/height", value: 3.4 }), { ok: true });
+  assert.equal(session.index().length, 2);
+  session.close();
+});
+
+test("FR-011: an amended insert is rebased with its amended value", async () => {
+  const { session, memory } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+  await add(session, "/walls/W3", wall(3.2));
+  await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W3/height", value: 3.4 });
+  memory.write("/g/walls.yaml", "# c\n" + WALLS);
+  await absorbed(session, "/g/walls.yaml");
+  assert.deepEqual(entries(session), [["add", "/walls/W3", 55, 55]]);
+  await session.commit();
+  assert.equal(await read(memory, "/g/walls.yaml"), "# c\n" + WALLS + "  W3:\n    height: 3.4\n");
+  session.close();
+});
+
+/** A toy with an `add` and a `write` that knows only top-level keys: its documents answer neither `inside` nor `amend`. */
+const plain = (extra: { inside?: boolean } = {}): Writer => ({
+  claims: keyValue.claims,
+  open: data => {
+    const opened = keyValue.open(data);
+    if (!opened.ok) return opened;
+    const add = (path: string) => ({ ok: true as const, edit: { start: data.length, end: data.length, bytes: bytes(`${path}=0\n`) } });
+    return { ok: true, document: { ...opened.document, add, ...(extra.inside ? { inside: (path: string, within: string) => path.startsWith(`${within}/`) } : {}) } };
+  },
+});
+
+test("FR-012: a writer without inside or amend: nothing is inside anything; the writer's refusal stands, naming the missing capability", async () => {
+  const { session } = await openOn({ "/w.conf": W }, [plain()]);
+  assert.deepEqual(await add(session, "c", "3", "/w.conf"), { ok: true });
+  const result = await session.stage("/w.conf", { op: "set", path: "c/x", value: "1" });
+  assert.equal(result.ok, false);
+  assert.match(result.ok ? "" : result.reason, /^no key c\/x; .*inside/);
+  // with no insert staged, the writer's refusal is verbatim
+  await session.unstage("/w.conf");
+  assert.deepEqual(await session.stage("/w.conf", { op: "set", path: "c/x", value: "1" }), { ok: false, reason: "no key c/x" });
+  session.close();
+});
+
+test("FR-012: a writer that answers inside but not amend refuses an edit inside a staged edit by name", async () => {
+  const { session } = await openOn({ "/w.conf": W }, [plain({ inside: true })]);
+  await add(session, "c", "3", "/w.conf");
+  assert.deepEqual(await session.stage("/w.conf", { op: "set", path: "c/x", value: "1" }), { ok: false, reason: "the writer for /w.conf cannot amend the staged edit at c: its document has no amend" });
+  assert.deepEqual(await session.stage("/w.conf", { op: "set", path: "b", value: "9" }), { ok: true }); // beside it, fine
   session.close();
 });
