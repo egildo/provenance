@@ -400,3 +400,168 @@ test("FR-007: a writer whose new version no longer offers add makes the insert u
   assert.deepEqual(changes.flatMap(c => c.edits ?? []), [{ source: id, path: "c", outcome: "conflicted", reason: "unwritable" }]);
   session.close();
 });
+
+// ---- Part D: delete (FR-009, FR-010) ----
+// Removing W1 takes its whole lines: `  W1:⏎` and `    height: 3.2⏎`, bytes 7-28, so the range is 7-29.
+
+const remove = (session: Session, path: string, location = "/g/walls.yaml") => session.stage(location, { op: "remove", path });
+const WITHOUT_W1 = "walls:\n  W2:\n    height: 3.2\n"; // 7 + 22 = 29 bytes
+
+test("FR-009, write-back.md: walls.yaml loses W1, and the edit is bytes 7-29 with no value", async () => {
+  const { session, memory } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+  assert.deepEqual(await remove(session, "/walls/W1"), { ok: true });
+  const [edit] = session.index();
+  assert.deepEqual([edit?.op, edit?.path, edit?.start, edit?.end, edit?.status], ["remove", "/walls/W1", 7, 29, "staged"]);
+  assert.equal("value" in (edit ?? {}), false);
+  assert.equal(await previewText(session, "/g/walls.yaml"), WITHOUT_W1);
+  assert.equal((await session.preview(idOf(session, "/g/walls.yaml")))?.bytes.length, 29);
+  const report = await session.commit();
+  assert.deepEqual(report.sources.map(s => [s.outcome, s.edits]), [["written", [{ path: "/walls/W1", outcome: "written" }]]]);
+  assert.equal(await read(memory, "/g/walls.yaml"), WITHOUT_W1); // L3: 0-6 and 29-50 of the old file, nothing else
+  session.close();
+});
+
+test("FR-016, write-back.md: walls.yaml gains W3 whole and loses W1, in one commit", async () => {
+  const { session, memory } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+  await add(session, "/walls/W3", wall(3.2));
+  await remove(session, "/walls/W1");
+  assert.deepEqual(session.index().map(e => [e.op, e.start, e.end]), [["add", 51, 51], ["remove", 7, 29]]);
+  const after = "walls:\n  W2:\n    height: 3.2\n  W3:\n    height: 3.2\n"; // 7 + 22 + 22 = 51 bytes again
+  assert.equal(await previewText(session, "/g/walls.yaml"), after);
+  await session.commit();
+  assert.equal(await read(memory, "/g/walls.yaml"), after);
+  session.close();
+});
+
+test("FR-009: the writer's own refusals are the staging refusals, verbatim: an absent entry, the whole document", async () => {
+  const { session } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+  const direct = yamlWriter().open(bytes(WALLS));
+  assert.ok(direct.ok);
+  for (const path of ["/walls/W9", ""]) {
+    const refusal = direct.document.remove?.(path);
+    assert.equal(refusal?.ok, false);
+    assert.deepEqual(await remove(session, path), { ok: false, reason: refusal?.ok === false ? refusal.reason : "" }, JSON.stringify(path));
+  }
+  assert.deepEqual(session.index(), []);
+  session.close();
+});
+
+test("FR-009: a writer whose document has no remove refuses a delete by name", async () => {
+  const { session } = await openOn({ "/w.conf": W }, [keyValue]);
+  assert.deepEqual(await remove(session, "a", "/w.conf"), { ok: false, reason: "the writer for /w.conf cannot remove: its document has no remove" });
+  session.close();
+});
+
+test("FR-009: an edit over a staged delete's range is an overlap, refused", async () => {
+  const { session } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+  await remove(session, "/walls/W1");
+  const result = await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W1/height", value: 3.4 }); // 25-28 lies inside 7-29
+  assert.equal(result.ok, false);
+  assert.match(result.ok ? "" : result.reason, /overlaps the staged edit at \/walls\/W1/);
+  session.close();
+});
+
+test("FR-010: a delete carries over a comment added above it", async () => {
+  const { session, memory } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+  const id = idOf(session, "/g/walls.yaml");
+  await remove(session, "/walls/W1");
+  const changes = heard(session);
+  memory.write("/g/walls.yaml", "# c\n" + WALLS); // 4 bytes: 7-29 becomes 11-33
+  await absorbed(session, "/g/walls.yaml");
+  assert.deepEqual(changes.flatMap(c => c.edits ?? []), [{ source: id, path: "/walls/W1", outcome: "moved", start: 11, end: 33 }]);
+  await session.commit();
+  assert.equal(await read(memory, "/g/walls.yaml"), "# c\n" + WITHOUT_W1);
+  session.close();
+});
+
+test("FR-010: an entry a colleague has already removed makes the delete conflicted `gone`", async () => {
+  const { session, memory } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+  const id = idOf(session, "/g/walls.yaml");
+  await remove(session, "/walls/W1");
+  const changes = heard(session);
+  memory.write("/g/walls.yaml", WITHOUT_W1);
+  await absorbed(session, "/g/walls.yaml");
+  assert.deepEqual(session.index(), []);
+  assert.deepEqual(changes.flatMap(c => c.edits ?? []), [{ source: id, path: "/walls/W1", outcome: "conflicted", reason: "gone" }]);
+  session.close();
+});
+
+test("FR-010: an entry a colleague has changed makes the delete conflicted `changed`, and the colleague's work stays", async () => {
+  const { session, memory } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+  const id = idOf(session, "/g/walls.yaml");
+  await remove(session, "/walls/W1");
+  const changes = heard(session);
+  const theirs = "walls:\n  W1:\n    height: 3.0\n  W2:\n    height: 3.2\n"; // W1's height 3.2 -> 3.0
+  memory.write("/g/walls.yaml", theirs);
+  await absorbed(session, "/g/walls.yaml");
+  assert.deepEqual(session.index(), []);
+  assert.deepEqual(changes.flatMap(c => c.edits ?? []), [{ source: id, path: "/walls/W1", outcome: "conflicted", reason: "changed" }]);
+  assert.deepEqual(await session.commit(), { sources: [] });
+  assert.equal(await read(memory, "/g/walls.yaml"), theirs);
+  session.close();
+});
+
+test("FR-010: a commit that meets the colleague's change first reports the source conflicted `changed`", async () => {
+  const { session, memory } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()], { quiet: true });
+  const id = idOf(session, "/g/walls.yaml");
+  await remove(session, "/walls/W1");
+  memory.write("/g/walls.yaml", "walls:\n  W1:\n    height: 3.0\n  W2:\n    height: 3.2\n");
+  assert.deepEqual(await session.commit(), { sources: [{ source: id, location: "/g/walls.yaml", outcome: "conflicted", edits: [{ path: "/walls/W1", outcome: "conflicted", reason: "changed" }] }] });
+  session.close();
+});
+
+test("FR-010: a change to another entry is no change to this one: the delete still carries over", async () => {
+  const { session, memory } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+  await remove(session, "/walls/W1");
+  memory.write("/g/walls.yaml", "walls:\n  W1:\n    height: 3.2\n  W2:\n    height: 9.9\n");
+  await absorbed(session, "/g/walls.yaml");
+  assert.deepEqual(session.index().map(e => [e.op, e.start, e.end]), [["remove", 7, 29]]);
+  await session.commit();
+  assert.equal(await read(memory, "/g/walls.yaml"), "walls:\n  W2:\n    height: 9.9\n");
+  session.close();
+});
+
+// The comparison is the located bytes of the entry's value (what `locate` gives). Two consequences, pinned here
+// so the report's claims are witnessed: re-indenting a multi-line entry is a change; a comment added above the
+// entry, outside the located value, is not one, and `remove` takes it away with the entry.
+test("FR-010: `changed` compares the located value's bytes: a re-indented multi-line entry is changed", async () => {
+  const two = "walls:\n  W1:\n    height: 3.2\n    note: x\n  W2:\n    height: 3.2\n";
+  const { session, memory } = await openOn({ "/g/walls.yaml": two }, [yamlWriter()]);
+  await remove(session, "/walls/W1");
+  memory.write("/g/walls.yaml", "walls:\n  W1:\n      height: 3.2\n      note: x\n  W2:\n    height: 3.2\n"); // only the indentation differs
+  await absorbed(session, "/g/walls.yaml");
+  assert.deepEqual(session.index(), []);
+  session.close();
+});
+
+test("FR-010: ... and a comment a colleague adds above the entry is outside the located bytes, so the delete proceeds and takes it too", async () => {
+  const { session, memory } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+  await remove(session, "/walls/W1");
+  memory.write("/g/walls.yaml", "walls:\n  # survey note\n  W1:\n    height: 3.2\n  W2:\n    height: 3.2\n");
+  await absorbed(session, "/g/walls.yaml");
+  assert.deepEqual(session.index().map(e => [e.op, e.status, e.disk]), [["remove", "staged", undefined]]); // a delete never "overrides"
+  await session.commit();
+  assert.equal(await read(memory, "/g/walls.yaml"), WITHOUT_W1);
+  session.close();
+});
+
+test("FR-010: a writer that refuses the removal on the new version makes the delete unwritable", async () => {
+  const fickle: Writer = {
+    claims: keyValue.claims,
+    open: data => {
+      const opened = keyValue.open(data);
+      if (!opened.ok) return opened;
+      const remove = data[0] === 0x21 ? () => ({ ok: false as const, reason: "no longer removable" }) : () => ({ ok: true as const, edit: { start: 0, end: 4, bytes: new Uint8Array() } });
+      return { ok: true, document: { ...opened.document, remove } };
+    },
+  };
+  const { session, memory } = await openOn({ "/w.conf": W }, [fickle]);
+  const id = idOf(session, "/w.conf");
+  assert.deepEqual(await remove(session, "a", "/w.conf"), { ok: true });
+  assert.equal(await previewText(session, "/w.conf"), "b=2\n");
+  const changes = heard(session);
+  memory.write("/w.conf", "!\na=1\nb=2\n");
+  await absorbed(session, "/w.conf");
+  assert.deepEqual(changes.flatMap(c => c.edits ?? []), [{ source: id, path: "a", outcome: "conflicted", reason: "unwritable" }]);
+  session.close();
+});

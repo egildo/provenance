@@ -57,7 +57,7 @@ type Staged = {
   bytes: Uint8Array;
   status: "staged" | "overrides";
   disk?: Uint8Array;
-} & { op: "set" | "add"; value: EditData };
+} & ({ op: "set" | "add"; value: EditData } | { op: "remove"; value?: undefined });
 
 /** The staged edits of one source, all against its base version. */
 interface Staging {
@@ -342,6 +342,25 @@ export async function openSession(options: {
           notices.push({ source, path: e.path, outcome: "conflicted", reason: "unwritable" });
           continue;
         }
+      } else if (e.op === "remove") {
+        // A delete (FR-010) acts on the whole entry, which someone else's work may live inside: if the entry's
+        // located bytes are not the ones this edit was staged against, it is the colleague's now and is kept.
+        const found = doc.locate(e.path);
+        if (!found.ok) {
+          notices.push({ source, path: e.path, outcome: "conflicted", reason: "gone" });
+          continue;
+        }
+        checkRange(bytes.length, found.start, found.end, "the writer");
+        const was = staging.doc.locate(e.path);
+        if (!was.ok || !sameBytes(bytes.subarray(found.start, found.end), staging.base.subarray(was.start, was.end))) {
+          notices.push({ source, path: e.path, outcome: "conflicted", reason: "changed" });
+          continue;
+        }
+        again = doc.remove ? doc.remove(e.path) : { ok: false, reason: "no remove" };
+        if (!again.ok) {
+          notices.push({ source, path: e.path, outcome: "conflicted", reason: "unwritable" });
+          continue;
+        }
       } else {
         // An insert (FR-007). The writer says why it refuses only in words, and the session reads no path,
         // so it asks the new version whether the key is there: if so a colleague added it (`exists`), and if
@@ -367,7 +386,8 @@ export async function openSession(options: {
       const moved = start !== e.start || end !== e.end;
       const status = same ? e.status : "overrides";
       const disk = same ? e.disk : now;
-      kept.push({ path: e.path, op: e.op, value: e.value, bytes: again.edit.bytes, start, end, status, ...(disk === undefined ? {} : { disk }) });
+      const rewritten = { path: e.path, bytes: again.edit.bytes, start, end, status, ...(disk === undefined ? {} : { disk }) };
+      kept.push(e.op === "remove" ? { ...rewritten, op: "remove" } : { ...rewritten, op: e.op, value: e.value });
       if (!same) notices.push({ source, path: e.path, outcome: "overrides", start, end, disk: now });
       else if (moved) notices.push({ source, path: e.path, outcome: "moved", start, end });
       else if (!sameBytes(again.edit.bytes, e.bytes)) notices.push({ source, path: e.path, outcome: "respelled", start, end });
@@ -653,7 +673,7 @@ export async function openSession(options: {
   }
 
   async function stageEdit(location: string, operation: EditOperation): Promise<StageResult> {
-    const { path, value } = operation;
+    const { path } = operation;
     const key = await keyFor(location);
     const node = nodes.get(key);
     if (!node) return { ok: false, reason: "not a source in the session's graph" };
@@ -672,15 +692,22 @@ export async function openSession(options: {
       if (!opening.ok) return { ok: false, reason: opening.reason };
       doc = opening.document;
     }
-    if (operation.op === "add" && !doc.add) return { ok: false, reason: `the writer for ${key} cannot add: its document has no add` };
-    const written = operation.op === "add" && doc.add ? doc.add(path, value) : doc.write(path, value);
+    const cannot = (op: "add" | "remove") => ({ ok: false as const, reason: `the writer for ${key} cannot ${op}: its document has no ${op}` });
+    let written: WriterWriteResult;
+    if (operation.op === "remove") {
+      if (!doc.remove) return cannot("remove");
+      written = doc.remove(path);
+    } else if (operation.op === "add") {
+      if (!doc.add) return cannot("add");
+      written = doc.add(path, operation.value);
+    } else written = doc.write(path, operation.value);
     if (!written.ok) return { ok: false, reason: written.reason };
     const { start, end, bytes } = written.edit;
     checkRange(base.length, start, end, "the writer");
     const clash = (staging?.edits ?? []).find(e => e.path !== path && overlaps(e, written.edit));
     if (clash) return { ok: false, reason: `the edit overlaps the staged edit at ${clash.path}` };
     if (!staging) staged.set(key, (staging = { writer, version: node.version, base, doc, edits: [] }));
-    const edit: Staged = { path, op: operation.op, value, start, end, bytes, status: "staged" };
+    const edit: Staged = { path, start, end, bytes, status: "staged", ...(operation.op === "remove" ? { op: "remove" as const } : { op: operation.op, value: operation.value }) };
     // Replaced, the edit goes last: the list is in the order edits were staged, which a rebase reads.
     staging.edits = [...staging.edits.filter(e => e.path !== path), edit];
     staging.preview = undefined;
@@ -761,7 +788,7 @@ export async function openSession(options: {
             source: idFor(key),
             path: e.path,
             op: e.op,
-            value: e.value,
+            ...(e.value === undefined ? {} : { value: e.value }),
             base: staging.version,
             start: e.start,
             end: e.end,
