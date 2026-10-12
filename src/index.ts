@@ -16,10 +16,11 @@ export interface Session {
   removeRoot(location: string): Promise<void>;
   onChange(listener: (change: Change) => void): () => void;
   /**
-   * Stages a set edit of the value at `path` in the source at `location` (specs/editing/spec.md).
-   * A new edit at a path that already has one replaces it. Refusals resolve; a writer bug throws.
+   * Stages an edit of the source at `location` (specs/editing/spec.md, specs/insert-delete/spec.md): the
+   * operation's path in the format's own terms, and what to do there. A new edit at a path that already
+   * has one replaces it. Refusals resolve; a writer bug throws.
    */
-  stage(location: string, path: string, value: EditValue): Promise<StageResult>;
+  stage(location: string, operation: EditOperation): Promise<StageResult>;
   /** The staged edits, source by source, each against its source's base version. */
   index(): readonly StagedEdit[];
   /** Drops the staged edit at `path`, or every staged edit of the source. */
@@ -75,6 +76,9 @@ export type EditValue = string | number | bigint | boolean | null;
  * edit's; `unwritable`, its writer found the path but refused to write the value on the new bytes.
  */
 export type ConflictReason = "gone" | "overlap" | "unwritable";
+
+/** What `stage` is asked to do, JSON Patch's operation object with Cascata's verb names. */
+export type EditOperation = { readonly op: "set"; readonly path: string; readonly value: EditValue };
 
 export type StageResult = { readonly ok: true } | { readonly ok: false; readonly reason: string };
 
@@ -191,16 +195,29 @@ export type Resolution =
   | null;
 
 /**
- * The editing half of a format plug-in (specs/editing/spec.md). Pure, like a handler: it reads and
- * writes nothing. `path` is the format's own address of a value (a JSON Pointer, a selector and a
- * property); `value` is an `EditValue`. Offsets are bytes.
+ * The editing half of a format plug-in (specs/editing/spec.md, specs/insert-delete/spec.md). Pure, like a
+ * handler: it reads and writes nothing. `open` parses the bytes once; the document it answers is then asked
+ * as often as needed, each answer against the bytes as opened. `path` is the format's own address of a value
+ * (a JSON Pointer, a selector and a property); offsets are bytes.
  */
 export interface Writer {
   claims(location: string): boolean;
-  /** Where the value at `path` is in `bytes`, or why it is not there. */
-  locate(bytes: Uint8Array, path: string): { readonly ok: true; readonly start: number; readonly end: number } | { readonly ok: false; readonly reason: string };
+  open(bytes: Uint8Array): WriterOpenResult;
+}
+
+export type WriterOpenResult = { readonly ok: true; readonly document: WriterDocument } | { readonly ok: false; readonly reason: string };
+
+export type WriterLocateResult = { readonly ok: true; readonly start: number; readonly end: number } | { readonly ok: false; readonly reason: string };
+export type WriterWriteResult =
+  | { readonly ok: true; readonly edit: { readonly start: number; readonly end: number; readonly bytes: Uint8Array } }
+  | { readonly ok: false; readonly reason: string };
+
+/** A document a writer has parsed once. */
+export interface WriterDocument {
+  /** Where the value at `path` is in the bytes as opened, or why it is not there. */
+  locate(path: string): WriterLocateResult;
   /** The one splice that sets the value at `path`, in the source's own style, or why it cannot. */
-  write(bytes: Uint8Array, path: string, value: EditValue): { readonly ok: true; readonly edit: { readonly start: number; readonly end: number; readonly bytes: Uint8Array } } | { readonly ok: false; readonly reason: string };
+  write(path: string, value: EditValue): WriterWriteResult;
 }
 
 export interface Resolver {

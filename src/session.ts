@@ -7,6 +7,7 @@ import type {
   Change,
   Edge,
   EditNotice,
+  EditOperation,
   EditValue,
   CommitReport,
   Findings,
@@ -23,6 +24,7 @@ import type {
   StagedEdit,
   StageResult,
   Writer,
+  WriterDocument,
 } from "./index.ts";
 
 /** An edge as held inside the session: its target is a key (canonical location or URL), not an id. */
@@ -62,6 +64,8 @@ interface Staging {
   readonly writer: Writer;
   version: string;
   base: Uint8Array;
+  /** The base, opened once (insert-delete FR-002): immutable, so the rollback snapshot may share it. */
+  doc: WriterDocument;
   edits: Staged[];
   /** The version of the last preview analysed, held while these edits stay as they are. */
   preview?: string;
@@ -203,6 +207,7 @@ export async function openSession(options: {
         nodes: new Map(nodes),
         roots: new Set(roots),
         passRoots: new Map(passRoots),
+        // `doc` is an opened document, never changed once opened: copying the reference is a copy.
         staged: new Map([...staged].map(([key, staging]) => [key, { ...staging, edits: staging.edits.map(e => ({ ...e })) }])),
         // Links are mutated in place when the world changes under them.
         links: [...nodes.values()].flatMap(node => node.links.map(l => ({ link: l, target: l.target, probes: l.probes }))),
@@ -306,15 +311,23 @@ export async function openSession(options: {
   function rebase(key: string, staging: Staging, bytes: Uint8Array, version: string) {
     const source = idFor(key);
     const kept: Staged[] = [];
+    // One opening of the new version serves every edit; bytes that do not open leave none of them writable.
+    const opening = staging.writer.open(bytes);
+    if (!opening.ok) {
+      for (const e of staging.edits) notices.push({ source, path: e.path, outcome: "conflicted", reason: "unwritable" });
+      staged.delete(key);
+      return;
+    }
+    const doc = opening.document;
     for (const e of staging.edits) {
-      const found = staging.writer.locate(bytes, e.path);
+      const found = doc.locate(e.path);
       if (!found.ok) {
         notices.push({ source, path: e.path, outcome: "conflicted", reason: "gone" });
         continue;
       }
       checkRange(bytes.length, found.start, found.end, "the writer");
       // The value is written again on the new bytes: its spelling can depend on its neighbours.
-      const again = staging.writer.write(bytes, e.path, e.value);
+      const again = doc.write(e.path, e.value);
       if (!again.ok) {
         notices.push({ source, path: e.path, outcome: "conflicted", reason: "unwritable" });
         continue;
@@ -339,6 +352,7 @@ export async function openSession(options: {
       else if (!sameBytes(again.edit.bytes, e.bytes)) notices.push({ source, path: e.path, outcome: "respelled", start, end });
     }
     staging.edits = kept;
+    staging.doc = doc;
     staging.base = bytes;
     staging.version = version;
     staging.preview = undefined;
@@ -617,7 +631,8 @@ export async function openSession(options: {
     };
   }
 
-  async function stageEdit(location: string, path: string, value: EditValue): Promise<StageResult> {
+  async function stageEdit(location: string, operation: EditOperation): Promise<StageResult> {
+    const { path, value } = operation;
     const key = await keyFor(location);
     const node = nodes.get(key);
     if (!node) return { ok: false, reason: "not a source in the session's graph" };
@@ -630,13 +645,19 @@ export async function openSession(options: {
     // since is the rebase's business, when the host reports it.
     const base = staging?.base ?? ("bytes" in node ? node.bytes : undefined);
     if (!base) return { ok: false, reason: `${key} was not read` };
-    const written = writer.write(base, path, value);
+    let doc = staging?.doc;
+    if (!doc) {
+      const opening = writer.open(base);
+      if (!opening.ok) return { ok: false, reason: opening.reason };
+      doc = opening.document;
+    }
+    const written = doc.write(path, value);
     if (!written.ok) return { ok: false, reason: written.reason };
     const { start, end, bytes } = written.edit;
     checkRange(base.length, start, end, "the writer");
     const clash = (staging?.edits ?? []).find(e => e.path !== path && overlaps(e, written.edit));
     if (clash) return { ok: false, reason: `the edit overlaps the staged edit at ${clash.path}` };
-    if (!staging) staged.set(key, (staging = { writer, version: node.version, base, edits: [] }));
+    if (!staging) staged.set(key, (staging = { writer, version: node.version, base, doc, edits: [] }));
     const edit: Staged = { path, value, start, end, bytes, status: "staged" };
     // Replaced, the edit goes last: the list is in the order edits were staged, which a rebase reads.
     staging.edits = [...staging.edits.filter(e => e.path !== path), edit];
@@ -707,9 +728,9 @@ export async function openSession(options: {
       listeners.add(listener);
       return () => void listeners.delete(listener);
     },
-    stage(location, path, value) {
+    stage(location, operation) {
       let result: StageResult = { ok: false, reason: "the session is closed" };
-      return serialize(async () => void (result = await stageEdit(location, path, value))).then(() => result);
+      return serialize(async () => void (result = await stageEdit(location, operation))).then(() => result);
     },
     index: () =>
       [...staged].flatMap(([key, staging]) =>

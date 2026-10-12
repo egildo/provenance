@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { openSession } from "../src/index.ts";
 import type { Change, Findings, Handler, Host, Session, Writer } from "../src/index.ts";
 import { createMemoryHost } from "../src/memory.ts";
-import { absorbed, byLocation, keyValue, tick, unhandled } from "./helpers.ts";
+import { absorbed, byLocation, keyValue, keyValueShot, opened, tick, unhandled } from "./helpers.ts";
 
 // The editing stage's first slice (specs/editing/spec.md). The file /w.conf is `a=1⏎b=2⏎`, 8 bytes,
 // a's value at 2-3 and b's at 6-7; every expected value below is worked out by hand.
@@ -24,8 +24,8 @@ const idOf = (session: Session, location: string) => byLocation(session, locatio
 
 test("case 7: staging at a path again replaces the edit; it never stacks", async () => {
   const { session } = await open();
-  assert.deepEqual(await session.stage("/w.conf", "b", "3"), { ok: true });
-  assert.deepEqual(await session.stage("/w.conf", "b", "4"), { ok: true });
+  assert.deepEqual(await session.stage("/w.conf", { op: "set", path: "b", value: "3" }), { ok: true });
+  assert.deepEqual(await session.stage("/w.conf", { op: "set", path: "b", value: "4" }), { ok: true });
   const index = session.index();
   assert.equal(index.length, 1);
   assert.deepEqual(index[0], { source: idOf(session, "/w.conf"), path: "b", value: "4", base: sha(bytes(W)), start: 6, end: 7, status: "staged" });
@@ -36,8 +36,8 @@ test("case 7: staging at a path again replaces the edit; it never stacks", async
 
 test("case 8: edits are applied from the end backwards, every range against the base", async () => {
   const { session } = await open();
-  await session.stage("/w.conf", "a", "77");
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "a", value: "77" });
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   assert.deepEqual(session.index().map(e => [e.path, e.start, e.end]), [["a", 2, 3], ["b", 6, 7]]);
   const preview = await session.preview(idOf(session, "/w.conf"));
   assert.equal(text(preview?.bytes ?? new Uint8Array()), "a=77\nb=3\n");
@@ -49,9 +49,9 @@ test("case 8: edits are applied from the end backwards, every range against the 
 test("case 10: staging refuses, and never throws, what it cannot stage", async () => {
   const { session } = await open({ "/w.conf": W, "/other.txt": "x\n" });
   await session.addRoot("/other.txt");
-  assert.deepEqual(await session.stage("/nowhere.conf", "a", "1"), { ok: false, reason: "not a source in the session's graph" });
-  assert.deepEqual(await session.stage("/other.txt", "a", "1"), { ok: false, reason: "no writer claims /other.txt" });
-  assert.deepEqual(await session.stage("/w.conf", "c", "1"), { ok: false, reason: "no key c" });
+  assert.deepEqual(await session.stage("/nowhere.conf", { op: "set", path: "a", value: "1" }), { ok: false, reason: "not a source in the session's graph" });
+  assert.deepEqual(await session.stage("/other.txt", { op: "set", path: "a", value: "1" }), { ok: false, reason: "no writer claims /other.txt" });
+  assert.deepEqual(await session.stage("/w.conf", { op: "set", path: "c", value: "1" }), { ok: false, reason: "no key c" });
   assert.deepEqual(session.index(), []);
   session.close();
 });
@@ -61,7 +61,7 @@ test("a source the host refused cannot be staged", async () => {
   await session.addRoot("/gone.conf");
   memory.refuse("/gone.conf", "permission denied");
   await absorbed(session, "/w.conf");
-  const result = await session.stage("/gone.conf", "a", "2");
+  const result = await session.stage("/gone.conf", { op: "set", path: "a", value: "2" });
   assert.equal(result.ok, false);
   session.close();
 });
@@ -70,7 +70,7 @@ test("a source the host refused cannot be staged", async () => {
 test("a disk the session has not absorbed yet is staged against anyway, and the rebase moves the edit", async () => {
   const { session, memory } = await open();
   memory.write("/w.conf", "# note\na=1\nb=2\n");
-  assert.deepEqual(await session.stage("/w.conf", "b", "3"), { ok: true }); // the change event is still in flight
+  assert.deepEqual(await session.stage("/w.conf", { op: "set", path: "b", value: "3" }), { ok: true }); // the change event is still in flight
   assert.deepEqual(session.index().map(e => [e.start, e.end, e.base]), [[6, 7, sha(bytes(W))]]); // against the base the session holds
   await absorbed(session, "/w.conf");
   assert.deepEqual(session.index().map(e => [e.start, e.end, e.base]), [[13, 14, sha(bytes("# note\na=1\nb=2\n"))]]);
@@ -80,14 +80,14 @@ test("a disk the session has not absorbed yet is staged against anyway, and the 
 });
 
 test("two staged edits whose ranges overlap are a writer bug, refused at staging", async () => {
-  const overlapping: Writer = {
-    claims: keyValue.claims,
-    locate: keyValue.locate,
+  const overlapping: Writer = opened({
+    claims: keyValueShot.claims,
+    locate: keyValueShot.locate,
     write: (_bytes, path) => ({ ok: true, edit: { start: 2, end: path === "x" ? 3 : 4, bytes: bytes("Z") } }),
-  };
+  });
   const { session } = await open({ "/w.conf": W }, { writers: [overlapping] });
-  assert.deepEqual(await session.stage("/w.conf", "x", "1"), { ok: true });
-  const result = await session.stage("/w.conf", "y", "1");
+  assert.deepEqual(await session.stage("/w.conf", { op: "set", path: "x", value: "1" }), { ok: true });
+  const result = await session.stage("/w.conf", { op: "set", path: "y", value: "1" });
   assert.equal(result.ok, false);
   assert.match(result.ok ? "" : result.reason, /overlap/);
   assert.equal(session.index().length, 1);
@@ -95,33 +95,33 @@ test("two staged edits whose ranges overlap are a writer bug, refused at staging
 });
 
 test("a range outside the source is a writer bug and throws; nothing is staged", async () => {
-  const wild: Writer = { ...keyValue, write: () => ({ ok: true, edit: { start: 2, end: 99, bytes: bytes("Z") } }) };
+  const wild: Writer = opened({ ...keyValueShot, write: () => ({ ok: true, edit: { start: 2, end: 99, bytes: bytes("Z") } }) });
   const { session } = await open({ "/w.conf": W }, { writers: [wild] });
-  await assert.rejects(session.stage("/w.conf", "a", "1"), RangeError);
+  await assert.rejects(session.stage("/w.conf", { op: "set", path: "a", value: "1" }), RangeError);
   assert.deepEqual(session.index(), []);
   session.close();
 });
 
 test("a writer that throws rejects the call and leaves the index as it was", async () => {
-  const writer: Writer = {
-    ...keyValue,
+  const writer: Writer = opened({
+    ...keyValueShot,
     write(data, path, value) {
       if (path === "boom") throw new Error("writer broke");
-      return keyValue.write(data, path, value);
+      return keyValueShot.write(data, path, value);
     },
-  };
+  });
   const { session } = await open({ "/w.conf": W }, { writers: [writer] });
-  await session.stage("/w.conf", "a", "9");
-  await assert.rejects(session.stage("/w.conf", "boom", "1"), /writer broke/);
+  await session.stage("/w.conf", { op: "set", path: "a", value: "9" });
+  await assert.rejects(session.stage("/w.conf", { op: "set", path: "boom", value: "1" }), /writer broke/);
   assert.deepEqual(session.index().map(e => e.path), ["a"]);
-  assert.deepEqual(await session.stage("/w.conf", "b", "3"), { ok: true });
+  assert.deepEqual(await session.stage("/w.conf", { op: "set", path: "b", value: "3" }), { ok: true });
   session.close();
 });
 
 test("unstage drops one edit or every edit of a source, and the preview goes with the last", async () => {
   const { session } = await open();
-  await session.stage("/w.conf", "a", "77");
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "a", value: "77" });
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   await session.unstage("/w.conf", "a");
   assert.deepEqual(session.index().map(e => e.path), ["b"]);
   assert.equal(text((await session.preview(idOf(session, "/w.conf")))?.bytes ?? new Uint8Array()), "a=1\nb=3\n");
@@ -142,7 +142,7 @@ test("a preview is analysed like any version, and held while its edits are stage
   };
   const { session } = await open({ "/w.conf": W }, { handlers: [handler] });
   assert.equal(calls, 1); // the base
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   const id = idOf(session, "/w.conf");
   await session.preview(id);
   assert.equal(calls, 2); // the preview's version
@@ -153,7 +153,7 @@ test("a preview is analysed like any version, and held while its edits are stage
   assert.equal(calls, 3);
   // Unstaged, nobody holds it: staging the same edit again and previewing analyses it again.
   await session.unstage("/w.conf");
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   await session.preview(id);
   assert.equal(calls, 4);
   bystander.close();
@@ -170,7 +170,7 @@ function heard(session: Session): Change[] {
 
 test("case 3: a disk change elsewhere moves the edit to where its path now is", async () => {
   const { session, memory } = await open();
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   const changes = heard(session);
   const id = idOf(session, "/w.conf");
   memory.write("/w.conf", "# note\na=1\nb=2\n"); // "# note⏎" is 7 bytes, so b's value moves from 6-7 to 13-14
@@ -183,7 +183,7 @@ test("case 3: a disk change elsewhere moves the edit to where its path now is", 
 
 test("case 4: the same value changed on disk is overridden, carrying the disk's bytes, and reported", async () => {
   const { session, memory } = await open();
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   const changes = heard(session);
   const id = idOf(session, "/w.conf");
   memory.write("/w.conf", "a=1\nb=5\n");
@@ -195,7 +195,7 @@ test("case 4: the same value changed on disk is overridden, carrying the disk's 
 
 test("case 5: a disk change to another value is kept, and says nothing about the edit", async () => {
   const { session, memory } = await open();
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   const changes = heard(session);
   const id = idOf(session, "/w.conf");
   memory.write("/w.conf", "a=9\nb=2\n");
@@ -207,7 +207,7 @@ test("case 5: a disk change to another value is kept, and says nothing about the
 
 test("case 6: a path gone from the new version is conflicted: dropped, and reported", async () => {
   const { session, memory } = await open();
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   const changes = heard(session);
   const id = idOf(session, "/w.conf");
   memory.write("/w.conf", "a=1\n");
@@ -220,8 +220,8 @@ test("case 6: a path gone from the new version is conflicted: dropped, and repor
 
 test("a source that vanishes conflicts every edit it had", async () => {
   const { session, memory } = await open({ "/w.conf": W });
-  await session.stage("/w.conf", "a", "9");
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "a", value: "9" });
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   const changes = heard(session);
   memory.remove("/w.conf");
   await absorbed(session, "/w.conf");
@@ -232,14 +232,14 @@ test("a source that vanishes conflicts every edit it had", async () => {
 
 test("an overriding edit stays overriding through a later change that leaves the value alone", async () => {
   const { session, memory } = await open();
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   memory.write("/w.conf", "a=1\nb=5\n");
   await absorbed(session, "/w.conf");
   memory.write("/w.conf", "a=9\nb=5\n");
   await absorbed(session, "/w.conf");
   assert.deepEqual(session.index().map(e => [e.status, text(e.disk ?? new Uint8Array())]), [["overrides", "5"]]);
   // Staging the path again is a new edit against the current base, and overrides nothing.
-  await session.stage("/w.conf", "b", "4");
+  await session.stage("/w.conf", { op: "set", path: "b", value: "4" });
   assert.deepEqual(session.index().map(e => e.status), ["staged"]);
   session.close();
 });
@@ -254,7 +254,7 @@ test("a rolled-back batch leaves the staged edits where they were", async () => 
   };
   const { session, memory } = await open({ "/w.conf": W, "/n.md": "fine\n" }, { handlers: [throwing] });
   await session.addRoot("/n.md");
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   const before = session.index();
   const seen = await unhandled(async () => {
     memory.write("/w.conf", "# note\na=1\nb=2\n"); // rebased first ...
@@ -270,7 +270,7 @@ test("a read pass that ends on newer bytes rebases the edits too", async () => {
   const memory = createMemoryHost({ "/w.conf": W });
   const host: Host = { ...memory, watch: () => ({ set: () => undefined, close: () => undefined }) }; // no watcher: only the pass can notice
   const session = await openSession({ host, entry: "/w.conf", handlers: [], writers: [keyValue], writable: ["/"] });
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   memory.write("/w.conf", "# note\na=1\nb=2\n");
   const pass = session.read();
   await pass.host.read("/w.conf");
@@ -313,7 +313,7 @@ test("case 1: a staged edit is written, only its value moves, and the session re
   const { host, writes } = spied(memory);
   const session = await openOn(host);
   const id = idOf(session, "/w.conf");
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   const changes = heard(session);
   const report = await session.commit();
   assert.deepEqual(report, { sources: [{ source: id, location: "/w.conf", outcome: "written", version: sha(bytes("a=1\nb=3\n")), edits: [{ path: "b", outcome: "written" }] }] });
@@ -332,7 +332,7 @@ test("FR-010: the session absorbs its own write by re-analysing, once", async ()
   const memory = createMemoryHost({ "/w.conf": W });
   const session = await openOn(memory, { handlers: [handler] });
   assert.equal(calls, 1);
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   await session.commit();
   assert.equal(calls, 2);
   await tick(); // the host's own change event for the write arrives, and finds the version already held
@@ -347,7 +347,7 @@ test("case 2 and 12: nothing staged, nothing written; and a second commit writes
   const session = await openOn(host);
   assert.deepEqual(await session.commit(), { sources: [] });
   assert.deepEqual(writes, []);
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   await session.commit();
   assert.equal(writes.length, 1);
   assert.deepEqual(await session.commit(), { sources: [] });
@@ -358,7 +358,7 @@ test("case 2 and 12: nothing staged, nothing written; and a second commit writes
 test("case 3: an edit rebased onto a changed disk is written where its path now is", async () => {
   const memory = createMemoryHost({ "/w.conf": W });
   const session = await openOn(memory);
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   memory.write("/w.conf", "# note\na=1\nb=2\n");
   await absorbed(session, "/w.conf");
   const report = await session.commit();
@@ -371,7 +371,7 @@ test("a commit rebases first when the disk moved and the session has not heard y
   const memory = createMemoryHost({ "/w.conf": W });
   const session = await openOn(memory);
   const id = idOf(session, "/w.conf");
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   const changes = heard(session);
   memory.write("/w.conf", "# note\na=1\nb=2\n");
   const report = await session.commit(); // queued before the change event is absorbed
@@ -384,7 +384,7 @@ test("a commit rebases first when the disk moved and the session has not heard y
 test("case 4: the last to commit wins, per value: the disk's bytes are replaced and the report says so", async () => {
   const memory = createMemoryHost({ "/w.conf": W });
   const session = await openOn(memory);
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   memory.write("/w.conf", "a=1\nb=5\n");
   await absorbed(session, "/w.conf");
   const report = await session.commit();
@@ -396,7 +396,7 @@ test("case 4: the last to commit wins, per value: the disk's bytes are replaced 
 test("case 4, unabsorbed: a commit that finds the value changed on disk overrides it and says so", async () => {
   const memory = createMemoryHost({ "/w.conf": W });
   const session = await openOn(memory);
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   memory.write("/w.conf", "a=1\nb=5\n");
   const report = await session.commit();
   assert.deepEqual(report.sources[0]?.edits, [{ path: "b", outcome: "overrode", disk: bytes("5") }]);
@@ -407,7 +407,7 @@ test("case 4, unabsorbed: a commit that finds the value changed on disk override
 test("case 5: a disk change to another value is kept", async () => {
   const memory = createMemoryHost({ "/w.conf": W });
   const session = await openOn(memory);
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   memory.write("/w.conf", "a=9\nb=2\n");
   await absorbed(session, "/w.conf");
   await session.commit();
@@ -419,7 +419,7 @@ test("case 6: a conflicted edit is never written", async () => {
   const memory = createMemoryHost({ "/w.conf": W });
   const { host, writes } = spied(memory);
   const session = await openOn(host);
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   memory.write("/w.conf", "a=1\n");
   await absorbed(session, "/w.conf");
   assert.deepEqual(await session.commit(), { sources: [] });
@@ -432,7 +432,7 @@ test("case 6, unabsorbed: a commit that finds the path gone reports the source c
   const { host, writes } = spied(memory);
   const session = await openOn(host);
   const id = idOf(session, "/w.conf");
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   memory.write("/w.conf", "a=1\n");
   const report = await session.commit();
   assert.deepEqual(report, { sources: [{ source: id, location: "/w.conf", outcome: "conflicted", edits: [{ path: "b", outcome: "conflicted", reason: "gone" }] }] });
@@ -444,8 +444,8 @@ test("case 6, unabsorbed: a commit that finds the path gone reports the source c
 test("case 8: two edits in one source are both written, and nothing else moves", async () => {
   const memory = createMemoryHost({ "/w.conf": W });
   const session = await openOn(memory);
-  await session.stage("/w.conf", "a", "77");
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "a", value: "77" });
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   await session.commit();
   const disk = await memory.read("/w.conf");
   assert.equal(disk.ok && text(disk.bytes), "a=77\nb=3\n");
@@ -458,7 +458,7 @@ test("case 9: with no writable root, a commit is refused and the edit is kept", 
   const { host, writes } = spied(memory);
   const session = await openSession({ host, entry: "/w.conf", handlers: [], writers: [keyValue] }); // `writable` absent
   const id = idOf(session, "/w.conf");
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   const report = await session.commit();
   assert.deepEqual(report, { sources: [{ source: id, location: "/w.conf", outcome: "refused", reason: "/w.conf is outside every writable root", edits: [] }] });
   assert.deepEqual(writes, []);
@@ -472,7 +472,7 @@ test("case 11: a host that fails the write: the report says why, and the edit is
   const { host } = spied(memory, { fail: "disk full" });
   const session = await openOn(host);
   const id = idOf(session, "/w.conf");
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   const report = await session.commit();
   assert.deepEqual(report, { sources: [{ source: id, location: "/w.conf", outcome: "failed", reason: "disk full", edits: [] }] });
   assert.equal(await read(memory, "/w.conf"), W);
@@ -484,7 +484,7 @@ test("a host without a write verb can stage and preview, and its commit is refus
   const memory = createMemoryHost({ "/w.conf": W });
   const { host } = spied(memory, { noWrite: true });
   const session = await openOn(host);
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   assert.equal(text((await session.preview(idOf(session, "/w.conf")))?.bytes ?? new Uint8Array()), "a=1\nb=3\n");
   const report = await session.commit();
   assert.equal(report.sources[0]?.outcome, "refused");
@@ -499,9 +499,9 @@ test("case 13: the sandbox is per source, judged on whole path segments", async 
   const session = await openSession({ host, entry: "/d/w.conf", handlers: [], writers: [keyValue], writable: ["/d"] });
   await session.addRoot("/x/x.conf");
   await session.addRoot("/dd/y.conf");
-  await session.stage("/d/w.conf", "b", "3");
-  await session.stage("/x/x.conf", "a", "2");
-  await session.stage("/dd/y.conf", "a", "2"); // "/dd" is not under "/d"
+  await session.stage("/d/w.conf", { op: "set", path: "b", value: "3" });
+  await session.stage("/x/x.conf", { op: "set", path: "a", value: "2" });
+  await session.stage("/dd/y.conf", { op: "set", path: "a", value: "2" }); // "/dd" is not under "/d"
   const report = await session.commit();
   assert.deepEqual(report.sources.map(s => [s.location, s.outcome]), [["/d/w.conf", "written"], ["/x/x.conf", "refused"], ["/dd/y.conf", "refused"]]);
   assert.deepEqual(writes, [["/d/w.conf", "a=1\nb=3\n"]]);
@@ -521,8 +521,8 @@ test("a failure on one source does not stop the others; the report says what lan
   };
   const session = await openOn(host);
   await session.addRoot("/v.conf");
-  await session.stage("/w.conf", "b", "3");
-  await session.stage("/v.conf", "a", "2");
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
+  await session.stage("/v.conf", { op: "set", path: "a", value: "2" });
   const report = await session.commit();
   assert.deepEqual(report.sources.map(s => [s.location, s.outcome]), [["/w.conf", "failed"], ["/v.conf", "written"]]);
   assert.deepEqual(writes, ["/w.conf", "/v.conf"]);
@@ -533,19 +533,19 @@ test("a failure on one source does not stop the others; the report says what lan
 
 test("a throw while committing rejects the call and leaves the index and the disk as they were", async () => {
   let broken = false;
-  const writer: Writer = {
-    ...keyValue,
+  const writer: Writer = opened({
+    ...keyValueShot,
     locate(data, path) {
       if (broken) throw new Error("writer broke");
-      return keyValue.locate(data, path);
+      return keyValueShot.locate(data, path);
     },
-  };
+  });
   const memory = createMemoryHost({ "/w.conf": W });
   const spy = spied(memory);
   const { writes } = spy;
   const host: Host = { ...spy.host, watch: () => ({ set: () => undefined, close: () => undefined }) }; // only the commit meets the new disk
   const session = await openSession({ host, entry: "/w.conf", handlers: [], writers: [writer], writable: ["/"] });
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   const before = session.index();
   broken = true;
   memory.write("/w.conf", "# note\na=1\nb=2\n");
@@ -571,9 +571,9 @@ test("a handler that throws on the written text rejects the commit, and the file
   const session = await openOn(quiet, { handlers: [throwing] });
   await session.addRoot("/v.conf");
   await session.addRoot("/u.conf");
-  await session.stage("/v.conf", "a", "2");
-  await session.stage("/w.conf", "b", "BOOM");
-  await session.stage("/u.conf", "a", "3"); // after the throwing one: never reached
+  await session.stage("/v.conf", { op: "set", path: "a", value: "2" });
+  await session.stage("/w.conf", { op: "set", path: "b", value: "BOOM" });
+  await session.stage("/u.conf", { op: "set", path: "a", value: "3" }); // after the throwing one: never reached
   await assert.rejects(session.commit(), /handler broke/);
   assert.equal(await read(memory, "/v.conf"), "a=2\n");
   assert.equal(await read(memory, "/w.conf"), "a=1\nb=BOOM\n");
@@ -591,19 +591,19 @@ test("a handler that throws on the written text rejects the commit, and the file
 // Round 2: a rebase writes the value again on the new bytes.
 test("a rebase writes the value again, because its spelling can depend on its neighbours", async () => {
   // A test writer that quotes a value when the previous line ends with a comma.
-  const quoting: Writer = {
-    ...keyValue,
+  const quoting: Writer = opened({
+    ...keyValueShot,
     write(data, path, value) {
-      const found = keyValue.locate(data, path);
+      const found = keyValueShot.locate(data, path);
       if (!found.ok) return found;
       const lines = text(data.slice(0, found.start)).split("\n");
       const quoted = (lines[lines.length - 2] ?? "").endsWith(",");
       return { ok: true, edit: { start: found.start, end: found.end, bytes: bytes(quoted ? `"${String(value)}"` : String(value)) } };
     },
-  };
+  });
   const memory = createMemoryHost({ "/w.conf": W });
   const session = await openSession({ host: memory, entry: "/w.conf", handlers: [], writers: [quoting], writable: ["/"] });
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   assert.equal(text((await session.preview(idOf(session, "/w.conf")))?.bytes ?? new Uint8Array()), "a=1\nb=3\n");
   memory.write("/w.conf", "a=1,\nb=2\n"); // "a=1,⏎" is 5 bytes, so b's value moves to 7-8, and its neighbour now ends with a comma
   await absorbed(session, "/w.conf");
@@ -616,20 +616,20 @@ test("a rebase writes the value again, because its spelling can depend on its ne
 
 // Joining FR-002 (editing FR-008 as amended): a rebase that keeps the range but changes the bytes is reported.
 test("a rebase that respells an edit without moving it says so", async () => {
-  const quoting: Writer = {
-    ...keyValue,
+  const quoting: Writer = opened({
+    ...keyValueShot,
     write(data, path, value) {
-      const found = keyValue.locate(data, path);
+      const found = keyValueShot.locate(data, path);
       if (!found.ok) return found;
       const lines = text(data.slice(0, found.start)).split("\n");
       const quoted = (lines[lines.length - 2] ?? "").endsWith(",");
       return { ok: true, edit: { start: found.start, end: found.end, bytes: bytes(quoted ? `"${String(value)}"` : String(value)) } };
     },
-  };
+  });
   const memory = createMemoryHost({ "/w.conf": W });
   const session = await openSession({ host: memory, entry: "/w.conf", handlers: [], writers: [quoting], writable: ["/"] });
   const id = idOf(session, "/w.conf");
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   const changes = heard(session);
   memory.write("/w.conf", "a=,\nb=2\n"); // "a=1⏎" and "a=,⏎" are both 4 bytes: b's value stays at 6-7, but its neighbour now ends in a comma
   await absorbed(session, "/w.conf");
@@ -642,12 +642,12 @@ test("a rebase that respells an edit without moving it says so", async () => {
 test("a value is a scalar: an object is a compile error, and the scalars compile", async () => {
   const { session } = await open();
   // @ts-expect-error an object is not an EditValue
-  await session.stage("/w.conf", "a", { not: "a scalar" });
-  await session.stage("/w.conf", "a", "1");
-  await session.stage("/w.conf", "a", 1);
-  await session.stage("/w.conf", "a", 1n);
-  await session.stage("/w.conf", "a", true);
-  await session.stage("/w.conf", "a", null);
+  await session.stage("/w.conf", { op: "set", path: "a", value: { not: "a scalar" } });
+  await session.stage("/w.conf", { op: "set", path: "a", value: "1" });
+  await session.stage("/w.conf", { op: "set", path: "a", value: 1 });
+  await session.stage("/w.conf", { op: "set", path: "a", value: 1n });
+  await session.stage("/w.conf", { op: "set", path: "a", value: true });
+  await session.stage("/w.conf", { op: "set", path: "a", value: null });
   session.close();
 });
 
@@ -655,19 +655,19 @@ test("a value is a scalar: an object is a compile error, and the scalars compile
 // A writer whose answer for `b` depends on the bytes: while they begin with `!`, `b`'s value is
 // written over `a`'s. On `a=1⏎b=2⏎` the two ranges are 2-3 and 6-7; on `!⏎a=1⏎b=2⏎` (two bytes
 // longer, `a`'s value at 4-5) `b` also answers 4-5, so the rebased edits overlap.
-const folding: Writer = {
-  claims: keyValue.claims,
-  locate: keyValue.locate,
-  write: (data, path, value) => keyValue.write(data, path === "b" && data[0] === 0x21 ? "a" : path, value),
-};
+const folding: Writer = opened({
+  claims: keyValueShot.claims,
+  locate: keyValueShot.locate,
+  write: (data, path, value) => keyValueShot.write(data, path === "b" && data[0] === 0x21 ? "a" : path, value),
+});
 const BANG = "!\na=1\nb=2\n";
 
 test("fix 2: after a rebase, of two staged edits that now overlap the later-staged is conflicted, reported, and never spliced", async () => {
   const { session, memory } = await open({ "/w.conf": W }, { writers: [folding] });
   const changes: Change[] = [];
   session.onChange(c => changes.push(c));
-  await session.stage("/w.conf", "a", "77");
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "a", value: "77" });
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   assert.deepEqual(session.index().map(e => [e.path, e.start, e.end]), [["a", 2, 3], ["b", 6, 7]]);
   memory.write("/w.conf", BANG);
   await absorbed(session, "/w.conf");
@@ -687,8 +687,8 @@ test("fix 2: the same, when only the commit meets the moved disk", async () => {
   const memory = createMemoryHost({ "/w.conf": W });
   const quiet: Host = { ...memory, watch: () => ({ set: () => undefined, close: () => undefined }) };
   const session = await openSession({ host: quiet, entry: "/w.conf", handlers: [], writers: [folding], writable: ["/"] });
-  await session.stage("/w.conf", "a", "77");
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "a", value: "77" });
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   memory.write("/w.conf", BANG);
   const report = await session.commit();
   assert.deepEqual(report.sources.map(s => [s.outcome, s.edits.map(e => [e.path, e.outcome, e.reason])]), [["written", [["b", "conflicted", "overlap"], ["a", "written", undefined]]]]);
@@ -698,9 +698,9 @@ test("fix 2: the same, when only the commit meets the moved disk", async () => {
 
 test("fix 2: 'later-staged' is the edit staged last, so restaging an edit makes it the one that yields", async () => {
   const { session, memory } = await open({ "/w.conf": W }, { writers: [folding] });
-  await session.stage("/w.conf", "a", "77");
-  await session.stage("/w.conf", "b", "3");
-  await session.stage("/w.conf", "a", "88"); // a is now the later-staged
+  await session.stage("/w.conf", { op: "set", path: "a", value: "77" });
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
+  await session.stage("/w.conf", { op: "set", path: "a", value: "88" }); // a is now the later-staged
   memory.write("/w.conf", BANG);
   await absorbed(session, "/w.conf");
   assert.deepEqual(session.index().map(e => [e.path, e.start, e.end, e.value]), [["b", 4, 5, "3"]]);
@@ -709,16 +709,16 @@ test("fix 2: 'later-staged' is the edit staged last, so restaging an edit makes 
 
 // Round 2: a conflict carries its reason. "gone" and "overlap" are asserted beside the cases above;
 // "unwritable" is the writer finding the path but refusing to write on the new bytes.
-const refusing: Writer = {
-  claims: keyValue.claims,
-  locate: keyValue.locate,
-  write: (data, path, value) => (data[0] === 0x21 ? { ok: false, reason: "no longer writable" } : keyValue.write(data, path, value)),
-};
+const refusing: Writer = opened({
+  claims: keyValueShot.claims,
+  locate: keyValueShot.locate,
+  write: (data, path, value) => (data[0] === 0x21 ? { ok: false, reason: "no longer writable" } : keyValueShot.write(data, path, value)),
+});
 
 test("round 2: a writer that finds the path but refuses to write it on the new bytes conflicts the edit as unwritable", async () => {
   const { session, memory } = await open({ "/w.conf": W }, { writers: [refusing] });
   const changes = heard(session);
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   memory.write("/w.conf", BANG);
   await absorbed(session, "/w.conf");
   assert.deepEqual(session.index(), []);
@@ -732,7 +732,7 @@ test("round 2: the same, when only the commit meets the moved disk", async () =>
   const quiet: Host = { ...memory, watch: () => ({ set: () => undefined, close: () => undefined }) };
   const session = await openSession({ host: quiet, entry: "/w.conf", handlers: [], writers: [refusing], writable: ["/"] });
   const id = idOf(session, "/w.conf");
-  await session.stage("/w.conf", "b", "3");
+  await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   memory.write("/w.conf", BANG);
   assert.deepEqual(await session.commit(), { sources: [{ source: id, location: "/w.conf", outcome: "conflicted", edits: [{ path: "b", outcome: "conflicted", reason: "unwritable" }] }] });
   session.close();

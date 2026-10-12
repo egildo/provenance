@@ -58,7 +58,7 @@ async function loopThrough(spelled: string, truePath: string) {
     // Cascata answers the document's `origin.id`, which is the spelling it was loaded under, link and all
     // (found by this test; the claim is only that the answer names the file). `stage` canonicalizes it.
     assert.equal(await fs.realpath(target.location), path.join(truePath, "project.yaml"));
-    assert.deepEqual(await session.stage(target.location, target.pointer, 3.4), { ok: true });
+    assert.deepEqual(await session.stage(target.location, { op: "set", path: target.pointer, value: 3.4 }), { ok: true });
     assert.deepEqual(session.index().map(e => [e.start, e.end]), [[54, 57]]);
     // The session holds one source for the file, however it is spelled to it.
     assert.equal(session.sources().filter(s => s.location.endsWith("project.yaml")).length, 1);
@@ -154,7 +154,7 @@ for (const hold of ["before", "after"] as const) {
     const memory = createMemoryHost({ "/g/project.yaml": PROJECT, "/g/house.schema.yaml": SCHEMA, "/g/walls.yaml": WALLS });
     const { host, reached, release, reads } = holding(memory, hold);
     const { session, changes } = await openProject(host);
-    assert.deepEqual(await session.stage("/g/project.yaml", "/walls/W1/height", 3.4), { ok: true });
+    assert.deepEqual(await session.stage("/g/project.yaml", { op: "set", path: "/walls/W1/height", value: 3.4 }), { ok: true });
     const committing = session.commit(); // held inside the host's write
     await reached;
     // Held `before`, the disk is the old file; held `after`, the new one. Cascata reads it through a pass now.
@@ -189,7 +189,7 @@ test("fix 3: a pass that read the old file before a commit, and ends after it, r
   const loaded = await load("/g/project.yaml", { host: pass.host, sandboxRoot: "/g" });
   assert.ok(loaded.ok);
   assert.equal(w1Height(loaded.configuration.tree), 3.2);
-  await session.stage("/g/project.yaml", "/walls/W1/height", 3.4);
+  await session.stage("/g/project.yaml", { op: "set", path: "/walls/W1/height", value: 3.4 });
   await session.commit();
   const manifest = await pass.end();
   assert.equal(manifest.read.find(r => r.source === idOf(session, "/g/project.yaml"))?.version, sha(bytes(PROJECT)));
@@ -214,7 +214,7 @@ test("fix 3, on a real disk: reads racing a commit see the whole old file or the
       for (let round = 0; round < 6; round += 1) {
         const value = 3.4 + round / 10; // 3.4, 3.5, … : each a different file
         const now = was.replace(/height: [0-9.]+/, `height: ${value}`);
-        assert.ok(await session.stage(file, "/walls/W1/height", value));
+        assert.ok(await session.stage(file, { op: "set", path: "/walls/W1/height", value: value }));
         const pass = session.read("race");
         let done = false;
         const committing = session.commit().finally(() => (done = true));
@@ -273,7 +273,7 @@ test("fix 4: a writable root spelled in another letter case than the disk still 
     const file = path.join(dir, "project.yaml");
     const session = await openSession({ host, entry: file, handlers: [], writers: [yamlWriter()], writable: [spelled] });
     try {
-      assert.deepEqual(await session.stage(file, "/walls/W1/height", 3.4), { ok: true });
+      assert.deepEqual(await session.stage(file, { op: "set", path: "/walls/W1/height", value: 3.4 }), { ok: true });
       const report = await session.commit();
       assert.deepEqual(report.sources.map(s => [s.location, s.outcome]), [[file, "written"]]);
       assert.equal(await fs.readFile(file, "utf8"), NEW_PROJECT);

@@ -42,7 +42,7 @@ test("Cascata is a development dependency, and nothing under src/ names it", () 
     dependencies?: Record<string, string>;
     devDependencies?: Record<string, string>;
   };
-  assert.match(manifest.devDependencies?.["@egildo/cascata"] ?? "", /^\^1\.11\./);
+  assert.match(manifest.devDependencies?.["@egildo/cascata"] ?? "", /^\^1\.16\./);
   assert.equal(manifest.dependencies?.["@egildo/cascata"], undefined);
   for (const file of files) {
     assert.ok(!readFileSync(new URL(file, src), "utf8").includes("@egildo/cascata"), `${file} mentions @egildo/cascata`);

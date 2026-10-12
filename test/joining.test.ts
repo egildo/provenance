@@ -91,7 +91,7 @@ test("the fixture is the file write-back.md counted: 51 bytes, with the heights 
 
 test("case 1: set W2's height to 3.4; only bytes 47-50 change, and Cascata reads a decimal 3.4", async () => {
   const { memory, session } = await openWalls(WALLS);
-  assert.deepEqual(await session.stage("/g/walls.yaml", "/walls/W2/height", 3.4), { ok: true });
+  assert.deepEqual(await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W2/height", value: 3.4 }), { ok: true });
   assert.deepEqual(session.index().map(e => [e.start, e.end]), [[47, 50]]);
   await session.commit();
   const after = await disk(memory);
@@ -111,7 +111,7 @@ test("case 2: nothing staged, commit writes nothing, and the file is its 51 byte
 
 test("case 3: a comment added above moves the edit to 69-72, and the comment is kept", async () => {
   const { memory, session } = await openWalls(WALLS);
-  await session.stage("/g/walls.yaml", "/walls/W2/height", 3.4);
+  await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W2/height", value: 3.4 });
   const note = "# from survey 2026-09\n"; // 22 bytes
   assert.equal(bytes(note).length, 22);
   memory.write("/g/walls.yaml", note + WALLS);
@@ -129,7 +129,7 @@ test("case 4: the same value changed on disk is overridden, and the session is t
   const { memory, session } = await openWalls(WALLS);
   const changes: Change[] = [];
   session.onChange(c => changes.push(c));
-  await session.stage("/g/walls.yaml", "/walls/W2/height", 3.4);
+  await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W2/height", value: 3.4 });
   memory.write("/g/walls.yaml", edited("3.6"));
   await absorbed(session, "/g/walls.yaml");
   assert.deepEqual(session.index().map(e => [e.status, text(e.disk ?? new Uint8Array())]), [["overrides", "3.6"]]);
@@ -145,7 +145,7 @@ test("case 4: the same value changed on disk is overridden, and the session is t
 
 test("case 5: a colleague's change to W1 is kept, and W2 gets 3.4", async () => {
   const { memory, session } = await openWalls(WALLS);
-  await session.stage("/g/walls.yaml", "/walls/W2/height", 3.4);
+  await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W2/height", value: 3.4 });
   memory.write("/g/walls.yaml", edited("3.2", "3.0"));
   await absorbed(session, "/g/walls.yaml");
   await session.commit();
@@ -160,7 +160,7 @@ test("case 6: a colleague deletes W2: the edit is dropped, reported, and nothing
   const { memory, session, writes } = await openWalls(WALLS);
   const changes: Change[] = [];
   session.onChange(c => changes.push(c));
-  await session.stage("/g/walls.yaml", "/walls/W2/height", 3.4);
+  await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W2/height", value: 3.4 });
   const withoutW2 = "walls:\n  W1:\n    height: 3.2\n";
   memory.write("/g/walls.yaml", withoutW2);
   await absorbed(session, "/g/walls.yaml");
@@ -176,7 +176,7 @@ test("case 7: CRLF line endings: W1's height is at 27-30, and every CRLF stays",
   const crlf = WALLS.replaceAll("\n", "\r\n");
   assert.equal(crlf.slice(27, 30), "3.2");
   const { memory, session } = await openWalls(crlf);
-  await session.stage("/g/walls.yaml", "/walls/W1/height", 3.4);
+  await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W1/height", value: 3.4 });
   assert.deepEqual(session.index().map(e => [e.start, e.end]), [[27, 30]]);
   await session.commit();
   const after = await disk(memory);
@@ -190,7 +190,7 @@ test("case 8: a byte-order mark: W1's height is at 28-31, and the mark is still 
   const marked = "﻿" + WALLS;
   assert.deepEqual([...bytes(marked).slice(0, 3)], [0xef, 0xbb, 0xbf]);
   const { memory, session } = await openWalls(marked);
-  await session.stage("/g/walls.yaml", "/walls/W1/height", 3.4);
+  await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W1/height", value: 3.4 });
   assert.deepEqual(session.index().map(e => [e.start, e.end]), [[28, 31]]);
   await session.commit();
   const after = await disk(memory);
@@ -205,7 +205,7 @@ test("case 8: a byte-order mark: W1's height is at 28-31, and the mark is still 
 
 test("case 9: the integer 3 over a decimal is written 3.0, so the value read back is still a decimal", async () => {
   const { memory, session } = await openWalls(WALLS);
-  await session.stage("/g/walls.yaml", "/walls/W1/height", 3);
+  await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W1/height", value: 3 });
   await session.commit();
   const after = await disk(memory);
   assert.equal(after, edited("3.2", "3.0"));
@@ -217,7 +217,7 @@ test("case 10: a string that now needs quotes is written quoted, and reads back 
   const withNote = "walls:\n  W1:\n    height: 3.2\n    note: north side\n  W2:\n    height: 3.2\n";
   assert.equal(withNote.slice(39, 49), "north side");
   const { memory, session } = await openWalls(withNote);
-  await session.stage("/g/walls.yaml", "/walls/W1/note", "north: side");
+  await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W1/note", value: "north: side" });
   assert.deepEqual(session.index().map(e => [e.start, e.end]), [[39, 49]]);
   await session.commit();
   const after = await disk(memory);
@@ -255,7 +255,7 @@ async function editMerged(session: Session, pointer: string, value: number | str
   const target = editTarget(await loadCascade(session), pointer);
   if (!target.ok) return { ok: false, reason: target.diagnostics[0]?.message ?? "", ...(target.diagnostics[0] ? { code: target.diagnostics[0].code } : {}) };
   assert.equal(target.format, "yaml");
-  return session.stage(target.location, target.pointer, value);
+  return session.stage(target.location, { op: "set", path: target.pointer, value: value });
 }
 
 test("the fixture's project.yaml is 80 bytes with W1's height at 54-57 (counted by hand)", () => {
@@ -278,7 +278,7 @@ test("FR-005: a value supplied by the schema's provide is refused as inherited, 
 test("FR-005: editing /walls/W1/height lands in project.yaml at 54-57, and in nothing else", async () => {
   const { memory, session, writes } = await openCascade();
   const configuration = await loadCascade(session);
-  assert.deepEqual(editTarget(configuration, "/walls/W1/height"), { ok: true, location: "/g/project.yaml", pointer: "/walls/W1/height", format: "yaml" });
+  assert.deepEqual(editTarget(configuration, "/walls/W1/height"), { ok: true, location: "/g/project.yaml", pointer: "/walls/W1/height", format: "yaml", diagnostics: [] });
   // The pass made the schema a source the session holds, beside the entry.
   assert.equal(byLocation(session, "/g/house.schema.yaml").state, "leaf");
   assert.deepEqual(await editMerged(session, "/walls/W1/height", 3.4), { ok: true });
@@ -328,7 +328,7 @@ async function onDisk(t: TestContext, content: string) {
 test("FR-006, case 1, on a real disk: the file is replaced atomically, and the session hears its own write once", async t => {
   const { dir, file, session, changes } = await onDisk(t, WALLS);
   const inode = (await fs.stat(file)).ino;
-  assert.deepEqual(await session.stage(file, "/walls/W2/height", 3.4), { ok: true });
+  assert.deepEqual(await session.stage(file, { op: "set", path: "/walls/W2/height", value: 3.4 }), { ok: true });
   assert.deepEqual(session.index().map(e => [e.start, e.end]), [[47, 50]]);
   assert.equal((await session.commit()).sources[0]?.outcome, "written");
   assert.equal(await fs.readFile(file, "utf8"), edited("3.4"));
@@ -340,7 +340,7 @@ test("FR-006, case 1, on a real disk: the file is replaced atomically, and the s
 
 test("FR-006, case 3, on a real disk: a comment added by another process moves the edit to 69-72", async t => {
   const { dir, file, session, changes } = await onDisk(t, WALLS);
-  await session.stage(file, "/walls/W2/height", 3.4);
+  await session.stage(file, { op: "set", path: "/walls/W2/height", value: 3.4 });
   const note = "# from survey 2026-09\n";
   await fs.writeFile(file, note + WALLS); // another process saves
   for (let waited = 0; changes.length === 0 && waited < 5000; waited += 25) await sleep(25);
@@ -355,11 +355,15 @@ test("Cascata's writer, wrapped in an unannotated arrow function, is a Provenanc
   // No `Parameters<typeof cascata.write>[2]` on `value`: it is contextually an EditValue, here and there.
   const wrapped: Writer = {
     claims: location => cascata.claims(location),
-    locate: (data, pointer) => cascata.locate(data, pointer),
-    write: (data, pointer, value) => cascata.write(data, pointer, value),
+    open(data) {
+      const result = cascata.open(data);
+      if (!result.ok) return result;
+      const { document } = result;
+      return { ok: true, document: { locate: pointer => document.locate(pointer), write: (pointer, value) => document.write(pointer, value) } };
+    },
   };
   const { memory, session } = await openWalls(WALLS, [wrapped]);
-  assert.deepEqual(await session.stage("/g/walls.yaml", "/walls/W2/height", 3.4), { ok: true });
+  assert.deepEqual(await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W2/height", value: 3.4 }), { ok: true });
   await session.commit();
   assert.equal(await disk(memory), edited("3.4"));
   session.close();

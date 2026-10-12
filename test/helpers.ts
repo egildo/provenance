@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { TestContext } from "node:test";
-import type { Edge, Handler, Host, Session, Source, Writer } from "../src/index.ts";
+import type { Edge, EditValue, Handler, Host, Session, Source, Writer, WriterDocument } from "../src/index.ts";
 
 /** A test-only include handler: `@include{src="…"}` on its own line requires its target. */
 export const include: Handler = {
@@ -44,11 +44,24 @@ export async function absorbed(session: Session, root: string): Promise<void> {
   await session.addRoot(root);
 }
 
+/** The one-shot shape every writer had before `open` (specs/insert-delete/ FR-001): bytes in, answer out, per call. */
+export interface OneShotWriter {
+  claims(location: string): boolean;
+  locate(bytes: Uint8Array, path: string): ReturnType<WriterDocument["locate"]>;
+  write(bytes: Uint8Array, path: string, value: EditValue): ReturnType<WriterDocument["write"]>;
+}
+
+/** A one-shot writer as a Writer: `open` keeps the bytes and every verb asks the one-shot again. */
+export const opened = (shot: OneShotWriter): Writer => ({
+  claims: shot.claims,
+  open: bytes => ({ ok: true, document: { locate: path => shot.locate(bytes, path), write: (path, value) => shot.write(bytes, path, value) } }),
+});
+
 /**
  * A test-only writer for a `key=value` line format, claiming `.conf`: the path is the key, the
  * value is written as its string, and `locate` gives the range of the text after `=` on the line.
  */
-export const keyValue: Writer = {
+export const keyValueShot: OneShotWriter = {
   claims: location => location.endsWith(".conf"),
   locate(bytes, path) {
     const text = new TextDecoder().decode(bytes);
@@ -65,12 +78,14 @@ export const keyValue: Writer = {
     return { ok: false, reason: `no key ${path}` };
   },
   write(bytes, path, value) {
-    const found = keyValue.locate(bytes, path);
+    const found = keyValueShot.locate(bytes, path);
     return found.ok
       ? { ok: true, edit: { start: found.start, end: found.end, bytes: new TextEncoder().encode(String(value)) } }
       : found;
   },
 };
+
+export const keyValue: Writer = opened(keyValueShot);
 
 /** Runs `action` and returns what escaped it as an unhandled rejection (the runner's own listener stands aside). */
 export async function unhandled(action: () => Promise<void>): Promise<unknown[]> {

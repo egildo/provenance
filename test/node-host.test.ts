@@ -114,7 +114,7 @@ test("a commit through the Node host writes the file, and the session hears its 
   const session = closing(t, await openSession({ host: createNodeHost({ debounce: 50 }), entry: file, handlers: [], writers: [keyValue], writable: [dir] }));
   await sleep(100);
   const { seen } = changes(session);
-  assert.deepEqual(await session.stage(file, "b", "3"), { ok: true });
+  assert.deepEqual(await session.stage(file, { op: "set", path: "b", value: "3" }), { ok: true });
   const report = await session.commit();
   assert.equal(report.sources[0]?.outcome, "written");
   assert.equal(await fs.readFile(file, "utf8"), "a=1\nb=3\n");
