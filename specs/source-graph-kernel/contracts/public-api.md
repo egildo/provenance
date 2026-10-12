@@ -138,7 +138,7 @@ interface EditNotice {                 // one per edit a rebase moved, found ove
   readonly start?: number;             // the new range; absent when conflicted or waiting
   readonly end?: number;
   readonly disk?: Uint8Array;
-  readonly detail?: string;            // for waiting: why the new version does not open
+  readonly detail?: string;            // the writer's words where its refusal caused this: waiting, or conflicted gone/exists/unwritable
 }
 
 /**
@@ -157,7 +157,7 @@ interface SourceCommit {
   readonly outcome: "written" | "refused" | "failed" | "conflicted";
   readonly reason?: string;
   readonly version?: string;           // the version written
-  readonly edits: readonly { readonly path: string; readonly outcome: "written" | "overrode" | "conflicted"; readonly reason?: ConflictReason; readonly disk?: Uint8Array }[];
+  readonly edits: readonly { readonly path: string; readonly outcome: "written" | "overrode" | "conflicted"; readonly reason?: ConflictReason; readonly detail?: string; readonly disk?: Uint8Array }[];
 }
 ```
 

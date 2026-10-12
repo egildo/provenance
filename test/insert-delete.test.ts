@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { jsonWriter, yamlWriter } from "@egildo/cascata/writers";
 import { openSession } from "../src/index.ts";
-import type { Change, EditData, Handler, Host, Session, Writer } from "../src/index.ts";
+import type { Change, EditData, Handler, Host, Session, Writer, WriterDocument } from "../src/index.ts";
 import { createMemoryHost } from "../src/memory.ts";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -188,6 +188,15 @@ test("FR-004: a staged container is rebased like any value: a comment added abov
 // end with a newline, so an entry added after the last one is spliced in at 51, empty-ranged.
 
 const W3 = "  W3:\n    height: 3.2\n";
+
+/** The oracle for a notice's `detail` (fixes FIX-004): what Cascata's writer itself answers on those bytes, asked directly. */
+function writerSays(text: string, ask: (document: WriterDocument) => { readonly ok: boolean; readonly reason?: string } | undefined): string {
+  const opened = yamlWriter().open(bytes(text));
+  if (!opened.ok) throw new Error("the oracle's bytes do not open");
+  const answer = ask(opened.document);
+  if (answer === undefined || answer.ok || answer.reason === undefined) throw new Error("the oracle expected a refusal");
+  return answer.reason;
+}
 const W4 = "  W4:\n    height: 3.4\n";
 const wall = (height: number) => new Map<string, EditData>([["height", height]]);
 const add = (session: Session, path: string, value: EditData, location = "/g/walls.yaml") => session.stage(location, { op: "add", path, value });
@@ -249,7 +258,7 @@ test("FR-007: a key a colleague has added meanwhile makes the insert conflicted 
   memory.write("/g/walls.yaml", theirs);
   await absorbed(session, "/g/walls.yaml");
   assert.deepEqual(session.index(), []);
-  assert.deepEqual(changes.flatMap(c => c.edits ?? []), [{ source: id, path: "/walls/W3", outcome: "conflicted", reason: "exists" }]);
+  assert.deepEqual(changes.flatMap(c => c.edits ?? []), [{ source: id, path: "/walls/W3", outcome: "conflicted", reason: "exists", detail: writerSays(theirs, d => d.add?.("/walls/W3", wall(3.2))) }]);
   assert.deepEqual(await session.commit(), { sources: [] });
   assert.equal(await read(memory, "/g/walls.yaml"), theirs);
   session.close();
@@ -272,7 +281,7 @@ test("FR-007: a commit that meets the colleague's key first reports the source c
   const id = idOf(session, "/g/walls.yaml");
   await add(session, "/walls/W3", wall(3.2));
   memory.write("/g/walls.yaml", WALLS + "  W3:\n    height: 9.9\n");
-  assert.deepEqual(await session.commit(), { sources: [{ source: id, location: "/g/walls.yaml", outcome: "conflicted", edits: [{ path: "/walls/W3", outcome: "conflicted", reason: "exists" }] }] });
+  assert.deepEqual(await session.commit(), { sources: [{ source: id, location: "/g/walls.yaml", outcome: "conflicted", edits: [{ path: "/walls/W3", outcome: "conflicted", reason: "exists", detail: writerSays(WALLS + "  W3:\n    height: 9.9\n", d => d.add?.("/walls/W3", wall(3.2))) }] }] });
   assert.equal(await read(memory, "/g/walls.yaml"), WALLS + "  W3:\n    height: 9.9\n");
   session.close();
 });
@@ -285,7 +294,7 @@ test("FR-007: a parent a colleague has removed makes the insert conflicted `gone
   memory.write("/g/walls.yaml", "doors:\n  D1: 1\n");
   await absorbed(session, "/g/walls.yaml");
   assert.deepEqual(session.index(), []);
-  assert.deepEqual(changes.flatMap(c => c.edits ?? []), [{ source: id, path: "/walls/W3", outcome: "conflicted", reason: "gone" }]);
+  assert.deepEqual(changes.flatMap(c => c.edits ?? []), [{ source: id, path: "/walls/W3", outcome: "conflicted", reason: "gone", detail: writerSays("doors:\n  D1: 1\n", d => d.add?.("/walls/W3", wall(3.2))) }]);
   session.close();
 });
 
@@ -465,7 +474,7 @@ test("FR-010: an entry a colleague has already removed makes the delete conflict
   memory.write("/g/walls.yaml", WITHOUT_W1);
   await absorbed(session, "/g/walls.yaml");
   assert.deepEqual(session.index(), []);
-  assert.deepEqual(changes.flatMap(c => c.edits ?? []), [{ source: id, path: "/walls/W1", outcome: "conflicted", reason: "gone" }]);
+  assert.deepEqual(changes.flatMap(c => c.edits ?? []), [{ source: id, path: "/walls/W1", outcome: "conflicted", reason: "gone", detail: writerSays(WITHOUT_W1, d => d.locate("/walls/W1")) }]);
   session.close();
 });
 
@@ -534,7 +543,7 @@ test("FR-010: a writer that refuses the removal on the new version makes the del
   const changes = heard(session);
   memory.write("/w.conf", "!\na=1\nb=2\n");
   await absorbed(session, "/w.conf");
-  assert.deepEqual(changes.flatMap(c => c.edits ?? []), [{ source: id, path: "a", outcome: "conflicted", reason: "unwritable" }]);
+  assert.deepEqual(changes.flatMap(c => c.edits ?? []), [{ source: id, path: "a", outcome: "conflicted", reason: "unwritable", detail: "no longer removable" }]);
   session.close();
 });
 

@@ -59,6 +59,8 @@ export interface SourceCommit {
     readonly outcome: "written" | "overrode" | "conflicted";
     /** Why an edit was dropped; present exactly when `outcome` is `conflicted`. */
     readonly reason?: ConflictReason;
+    /** The writer's words, as `EditNotice.detail` carries them (FIX-004). */
+    readonly detail?: string;
     /** The bytes on disk that an overriding edit replaced. */
     readonly disk?: Uint8Array;
   }[];
@@ -182,7 +184,10 @@ export interface EditNotice {
   readonly end?: number;
   /** The bytes on disk that an overriding edit will replace. */
   readonly disk?: Uint8Array;
-  /** For `waiting`: the writer's words for why the new version does not open. */
+  /**
+   * The writer's words, where a writer's refusal caused the outcome: why the new version does not open (`waiting`), or why
+   * it refused the edit (`conflicted` as `gone`, `exists` or `unwritable`; FIX-004). Absent where the session decided alone.
+   */
   readonly detail?: string;
 }
 

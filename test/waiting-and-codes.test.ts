@@ -156,7 +156,27 @@ for (const [disk, reason, why] of [
     const changes = heard(session);
     memory.write("/w.conf", disk);
     await absorbed(session, "/w.conf");
-    assert.deepEqual(changes.flatMap(c => c.edits ?? []), [{ source: id, path: "k", outcome: "conflicted", reason }]);
+    assert.deepEqual(changes.flatMap(c => c.edits ?? []), [{ source: id, path: "k", outcome: "conflicted", reason, detail: "refused" }]);
     session.close();
   });
 }
+
+// --- FIX-005: a writer that says "inside" and then "not inside" is a writer bug, and throws -----------------
+
+test("FIX-005: inside says yes and amend says no: the stage rejects, naming both answers, and the index is as it was", async () => {
+  const contrary: Writer = {
+    claims: keyValue.claims,
+    open: data => {
+      const opened = keyValue.open(data);
+      if (!opened.ok) return opened;
+      const add = (path: string) => ({ ok: true as const, edit: { start: data.length, end: data.length, bytes: new TextEncoder().encode(`${path}=0\n`) } });
+      return { ok: true, document: { ...opened.document, add, inside: () => true, amend: () => ({ inside: false as const }) } };
+    },
+  };
+  const { session } = await openOn({ "/w.conf": "a=1\n" }, [contrary]);
+  assert.deepEqual(await session.stage("/w.conf", { op: "add", path: "c", value: "3" }), { ok: true });
+  const before = session.index();
+  await assert.rejects(session.stage("/w.conf", { op: "set", path: "c/x", value: "4" }), /says c\/x is inside the staged edit at c, and its amend says it is not/);
+  assert.deepEqual(session.index(), before);
+  session.close();
+});

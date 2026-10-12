@@ -213,7 +213,7 @@ test("case 6: a path gone from the new version is conflicted: dropped, and repor
   memory.write("/w.conf", "a=1\n");
   await absorbed(session, "/w.conf");
   assert.deepEqual(session.index(), []);
-  assert.deepEqual(changes, [{ added: [], removed: [], changed: [id], edits: [{ source: id, path: "b", outcome: "conflicted", reason: "gone" }] }]);
+  assert.deepEqual(changes, [{ added: [], removed: [], changed: [id], edits: [{ source: id, path: "b", outcome: "conflicted", reason: "gone", detail: "no key b" }] }]); // detail: the writer's words (fixes FIX-004)
   assert.equal(await session.preview(id), undefined);
   session.close();
 });
@@ -435,7 +435,7 @@ test("case 6, unabsorbed: a commit that finds the path gone reports the source c
   await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   memory.write("/w.conf", "a=1\n");
   const report = await session.commit();
-  assert.deepEqual(report, { sources: [{ source: id, location: "/w.conf", outcome: "conflicted", edits: [{ path: "b", outcome: "conflicted", reason: "gone" }] }] });
+  assert.deepEqual(report, { sources: [{ source: id, location: "/w.conf", outcome: "conflicted", edits: [{ path: "b", outcome: "conflicted", reason: "gone", detail: "no key b" }] }] });
   assert.deepEqual(writes, []);
   assert.deepEqual(session.index(), []);
   session.close();
@@ -723,7 +723,7 @@ test("round 2: a writer that finds the path but refuses to write it on the new b
   await absorbed(session, "/w.conf");
   assert.deepEqual(session.index(), []);
   const id = idOf(session, "/w.conf");
-  assert.deepEqual(changes.flatMap(c => c.edits ?? []), [{ source: id, path: "b", outcome: "conflicted", reason: "unwritable" }]);
+  assert.deepEqual(changes.flatMap(c => c.edits ?? []), [{ source: id, path: "b", outcome: "conflicted", reason: "unwritable", detail: "no longer writable" }]);
   session.close();
 });
 
@@ -734,6 +734,6 @@ test("round 2: the same, when only the commit meets the moved disk", async () =>
   const id = idOf(session, "/w.conf");
   await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   memory.write("/w.conf", BANG);
-  assert.deepEqual(await session.commit(), { sources: [{ source: id, location: "/w.conf", outcome: "conflicted", edits: [{ path: "b", outcome: "conflicted", reason: "unwritable" }] }] });
+  assert.deepEqual(await session.commit(), { sources: [{ source: id, location: "/w.conf", outcome: "conflicted", edits: [{ path: "b", outcome: "conflicted", reason: "unwritable", detail: "no longer writable" }] }] });
   session.close();
 });

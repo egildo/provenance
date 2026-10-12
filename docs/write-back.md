@@ -209,6 +209,9 @@ rules the owner ruled, each a case:
   conflicted `shifted`, so an index never silently names another item. Finding the item again by content
   (GNU `patch`'s offset by context) is the named upgrade.
 
+`changed` is strict: any byte of what the delete would cut, layout included, so a colleague's reformat drops a pending
+delete, loudly (the owner's ruling). A conflict caused by the writer's refusal carries the writer's words.
+
 Two inserts at one spot are spliced in staging order; two into one empty container overlap (the writer
 rewrites the `{}` for each) and the second is refused — stage the container whole.
 

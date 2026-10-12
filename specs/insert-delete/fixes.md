@@ -20,6 +20,21 @@ From `report.md`'s findings 1, 2 and 3. Cases in `test/waiting-and-codes.test.ts
   same gone codes. Cascata's writers give codes from 1.16.1 (its `specs/026-shift-and-amend` FR-005); with 1.16.0 the
   look-up still serves. Sabotage: codes ignored (3 red); no gone codes (2).
 
+- **FIX-004 — a notice carries the writer's words** (open edge 1). Wherever a writer's refusal caused an outcome — a
+  rebased edit conflicted `gone`, `exists` or `unwritable` because the writer refused to locate, write, add or remove it —
+  the notice and the commit report's edit carry `detail`, the writer's reason, as `waiting` already did. An outcome the
+  session decided alone (`overlap`, `changed`, `shifted`, a writer without the verb) has none. The affected cases now
+  expect it: from the toy writers' own strings, and for Cascata's writer from an oracle that asks the writer itself on the
+  same bytes. Sabotage: a set's refusal without its words (2 red); the commit report without them (3).
+- **FIX-005 — a writer that contradicts itself throws** (open edge 4). `inside` says a path is inside a staged edit and
+  `amend` then answers `{ inside: false }`: that is a writer bug, and a writer bug throws, as a range outside the bytes
+  does; the stage rejects and the index is as it was. It used to fall through to ordinary staging. Sabotage: the old fall-
+  through (1 red).
+- **A re-indent counts as a change** (open edge 2, the owner's ruling A). `changed` stays strict: any byte of what the
+  delete would cut, layout included. A colleague's reformat drops a pending delete loudly, and the user stages it again.
+- **A delete restaged as a set goes last** (open edge 3, no change). It is a replacement at the same path, and the 0.5 rule
+  holds: a restaged edit counts as staged last. Only an amend to a staged insert keeps its place, being the same insert.
+
 **Tests removed, superseded by the rulings, and why:** "FR-002: bytes that do not open make every edit unwritable on
 rebase" (FIX-001 replaces the behaviour it pinned) and "FR-010: … a comment a colleague adds above the entry is outside
 the located bytes, so the delete proceeds and takes it too" (it pinned the defect FIX-002 fixes; the first FIX-002 case
@@ -29,6 +44,5 @@ is its inverse).
 `README.md` (status), the kernel's `contracts/public-api.md` (the editing types, all stale since this round), and a
 pointer at the head of `specs/editing/spec.md`'s requirements.
 
-**Still open from the report:** a notice carries no writer text for a conflict (only `waiting` carries `detail`);
-`changed` counts a re-indent as a change; a restaged remove-then-set goes last; `inside` true then `amend` false falls
-through to ordinary staging, untested; `EditValue` removed without an alias (Provenance has one user).
+**Still open from the report:** `EditValue` removed without an alias (Provenance has one user). One unrelated test
+failed once in a full run and passed three times after (the slow real-disk tests `specs/HANDOFF.md` names).

@@ -355,14 +355,14 @@ export async function openSession(options: {
       if (e.op === "set") {
         const found = doc.locate(e.path);
         if (!found.ok) {
-          notices.push({ source, path: e.path, outcome: "conflicted", reason: "gone" });
+          notices.push({ source, path: e.path, outcome: "conflicted", reason: "gone", detail: found.reason });
           continue;
         }
         checkRange(bytes.length, found.start, found.end, "the writer");
         // The value is written again on the new bytes: its spelling can depend on its neighbours.
         again = doc.write(e.path, e.value);
         if (!again.ok) {
-          notices.push({ source, path: e.path, outcome: "conflicted", reason: "unwritable" });
+          notices.push({ source, path: e.path, outcome: "conflicted", reason: "unwritable", detail: again.reason });
           continue;
         }
       } else if (e.op === "remove") {
@@ -370,13 +370,17 @@ export async function openSession(options: {
         // located bytes are not the ones this edit was staged against, it is the colleague's now and is kept.
         const found = doc.locate(e.path);
         if (!found.ok) {
-          notices.push({ source, path: e.path, outcome: "conflicted", reason: "gone" });
+          notices.push({ source, path: e.path, outcome: "conflicted", reason: "gone", detail: found.reason });
           continue;
         }
         checkRange(bytes.length, found.start, found.end, "the writer");
-        again = doc.remove ? doc.remove(e.path) : { ok: false, reason: "no remove" };
+        if (!doc.remove) {
+          notices.push({ source, path: e.path, outcome: "conflicted", reason: "unwritable" });
+          continue;
+        }
+        again = doc.remove(e.path);
         if (!again.ok) {
-          notices.push({ source, path: e.path, outcome: "conflicted", reason: GONE_CODES.has(again.code ?? "") ? "gone" : "unwritable" });
+          notices.push({ source, path: e.path, outcome: "conflicted", reason: GONE_CODES.has(again.code ?? "") ? "gone" : "unwritable", detail: again.reason });
           continue;
         }
         checkRange(bytes.length, again.edit.start, again.edit.end, "the writer");
@@ -389,11 +393,15 @@ export async function openSession(options: {
       } else {
         // An insert (FR-007). A refusal's code says why (FIX-003); a writer that gives none is asked whether the key is
         // there now: if so a colleague added it (`exists`), and if not the place it went into is gone.
-        again = doc.add ? doc.add(e.path, e.value) : { ok: false, reason: "no add" };
+        if (!doc.add) {
+          notices.push({ source, path: e.path, outcome: "conflicted", reason: "unwritable" });
+          continue;
+        }
+        again = doc.add(e.path, e.value);
         if (!again.ok) {
           const code = again.code;
-          const reason: ConflictReason = !doc.add ? "unwritable" : code === undefined ? (doc.locate(e.path).ok ? "exists" : "gone") : code === EXISTS_CODE ? "exists" : GONE_CODES.has(code) ? "gone" : "unwritable";
-          notices.push({ source, path: e.path, outcome: "conflicted", reason });
+          const reason: ConflictReason = code === undefined ? (doc.locate(e.path).ok ? "exists" : "gone") : code === EXISTS_CODE ? "exists" : GONE_CODES.has(code) ? "gone" : "unwritable";
+          notices.push({ source, path: e.path, outcome: "conflicted", reason, detail: again.reason });
           continue;
         }
       }
@@ -746,7 +754,9 @@ export async function openSession(options: {
       if (within.op === "remove") return { ok: false, reason: `the entry at ${within.path} is staged for removal` };
       if (!doc.amend) return { ok: false, reason: `the writer for ${key} cannot amend the staged edit at ${within.path}: its document has no amend` };
       const amended = doc.amend({ path: within.path, value: within.value }, operation);
-      if (amended.inside) return amended.ok ? restage(within, amended.value) : { ok: false, reason: amended.reason };
+      // The writer said the path is inside; an amend that says otherwise is the writer contradicting itself, a bug (FIX-005).
+      if (!amended.inside) throw new Error(`the writer for ${key} says ${operation.path} is inside the staged edit at ${within.path}, and its amend says it is not`);
+      return amended.ok ? restage(within, amended.value) : { ok: false, reason: amended.reason };
     }
     if (staging && same?.op === "add") {
       // On a staged insert's own path: a set or an add changes the insert wholesale, a remove undoes it.
@@ -800,7 +810,7 @@ export async function openSession(options: {
     if (version !== staging.version) rebase(key, staging, read.bytes, version);
     if (staging.waiting !== undefined && staged.get(key) === staging) return nothing("refused", `the file on disk does not open: ${staging.waiting}`);
     const dropped = notices.slice(first).filter(n => n.outcome === "conflicted" && n.source === source);
-    const edits: SourceCommit["edits"][number][] = dropped.map(n => ({ path: n.path, outcome: "conflicted", ...(n.reason === undefined ? {} : { reason: n.reason }) }));
+    const edits: SourceCommit["edits"][number][] = dropped.map(n => ({ path: n.path, outcome: "conflicted", ...(n.reason === undefined ? {} : { reason: n.reason }), ...(n.detail === undefined ? {} : { detail: n.detail }) }));
     const remaining = staged.get(key);
     if (!remaining) return { source, location: key, outcome: "conflicted", edits };
     const bytes = splice(remaining.base, remaining.edits);
