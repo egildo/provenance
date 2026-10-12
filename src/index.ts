@@ -75,12 +75,13 @@ export type EditData = string | number | bigint | boolean | null | readonly Edit
 /**
  * Why a staged edit was dropped as conflicted: `gone`, its path is no longer found in the source's
  * new version (or the source left the graph); `overlap`, its new range overlaps an earlier-staged
- * edit's; `unwritable`, its writer found the path but refused to write the value on the new bytes.
+ * edit's; `unwritable`, its writer found the path but refused to write the value on the new bytes; `exists`
+ * (an insert), the key was added on disk meanwhile.
  */
-export type ConflictReason = "gone" | "overlap" | "unwritable";
+export type ConflictReason = "gone" | "overlap" | "unwritable" | "exists";
 
 /** What `stage` is asked to do, JSON Patch's operation object with Cascata's verb names. */
-export type EditOperation = { readonly op: "set"; readonly path: string; readonly value: EditData };
+export type EditOperation = { readonly op: "set" | "add"; readonly path: string; readonly value: EditData };
 
 export type StageResult = { readonly ok: true } | { readonly ok: false; readonly reason: string };
 
@@ -223,6 +224,8 @@ export interface WriterDocument {
   locate(path: string): WriterLocateResult;
   /** The one splice that sets the value at `path`, in the source's own style, or why it cannot. */
   write(path: string, value: EditData): WriterWriteResult;
+  /** The splice that creates the entry at `path`, which must not exist; answers what `write` answers. Absent: the writer cannot insert. */
+  add?(path: string, value: EditData): WriterWriteResult;
 }
 
 export interface Resolver {

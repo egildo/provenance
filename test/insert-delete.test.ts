@@ -199,3 +199,204 @@ test("FR-004: a staged container is rebased like any value: a comment added abov
   assert.equal(await read(memory, "/g/walls.yaml"), "# c\n" + "walls:\n  W1:\n    height: 3.2\n  W2:\n    height: 3.4\n    thickness: 0.2\n");
   session.close();
 });
+
+// ---- Part C: insert (FR-006 to FR-008) ----
+// The added entries below are 22 bytes each: `  W3:⏎` (6) and `    height: 3.2⏎` (16). The file's 51 bytes
+// end with a newline, so an entry added after the last one is spliced in at 51, empty-ranged.
+
+const W3 = "  W3:\n    height: 3.2\n";
+const W4 = "  W4:\n    height: 3.4\n";
+const wall = (height: number) => new Map<string, EditData>([["height", height]]);
+const add = (session: Session, path: string, value: EditData, location = "/g/walls.yaml") => session.stage(location, { op: "add", path, value });
+
+test("FR-006, write-back.md: walls.yaml gains W3 whole; the preview and the commit are the file plus 22 bytes at 51", async () => {
+  const { session, memory } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+  assert.deepEqual(await add(session, "/walls/W3", wall(3.2)), { ok: true });
+  const [edit] = session.index();
+  assert.deepEqual([edit?.op, edit?.path, edit?.start, edit?.end, edit?.status], ["add", "/walls/W3", 51, 51, "staged"]);
+  assert.ok(edit?.value instanceof Map);
+  assert.equal(await previewText(session, "/g/walls.yaml"), WALLS + W3);
+  assert.equal((await session.preview(idOf(session, "/g/walls.yaml")))?.bytes.length, 51 + 22);
+  const report = await session.commit();
+  assert.deepEqual(report.sources.map(s => [s.outcome, s.edits]), [["written", [{ path: "/walls/W3", outcome: "written" }]]]);
+  assert.equal(await read(memory, "/g/walls.yaml"), WALLS + W3); // L3: the first 51 bytes are exactly the old file
+  session.close();
+});
+
+test("FR-006: the writer's own refusals are the staging refusals, verbatim: an existing key, an absent parent, a scalar parent", async () => {
+  const { session } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+  const direct = yamlWriter().open(bytes(WALLS));
+  assert.ok(direct.ok);
+  for (const path of ["/walls/W2", "/nowhere/x", "/walls/W1/height/x"]) {
+    const refusal = direct.document.add?.(path, 1);
+    assert.equal(refusal?.ok, false);
+    assert.deepEqual(await add(session, path, 1), { ok: false, reason: refusal?.ok === false ? refusal.reason : "" }, path);
+  }
+  assert.deepEqual(session.index(), []);
+  session.close();
+});
+
+test("FR-006: a writer whose document has no add refuses an insert by name", async () => {
+  const { session } = await openOn({ "/w.conf": W }, [keyValue]);
+  assert.deepEqual(await add(session, "c", "3", "/w.conf"), { ok: false, reason: "the writer for /w.conf cannot add: its document has no add" });
+  assert.deepEqual(session.index(), []);
+  session.close();
+});
+
+test("FR-007: an insert carries over a comment added above it, and the notice says where it went", async () => {
+  const { session, memory } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+  const id = idOf(session, "/g/walls.yaml");
+  await add(session, "/walls/W3", wall(3.2));
+  const changes = heard(session);
+  memory.write("/g/walls.yaml", "# from survey\n" + WALLS); // 14 bytes: 51 becomes 65
+  await absorbed(session, "/g/walls.yaml");
+  assert.deepEqual(session.index().map(e => [e.op, e.start, e.end, e.status]), [["add", 65, 65, "staged"]]);
+  assert.deepEqual(changes.flatMap(c => c.edits ?? []), [{ source: id, path: "/walls/W3", outcome: "moved", start: 65, end: 65 }]);
+  await session.commit();
+  assert.equal(await read(memory, "/g/walls.yaml"), "# from survey\n" + WALLS + W3);
+  session.close();
+});
+
+test("FR-007: a key a colleague has added meanwhile makes the insert conflicted `exists`, and the colleague's entry is kept (different)", async () => {
+  const { session, memory } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+  const id = idOf(session, "/g/walls.yaml");
+  await add(session, "/walls/W3", wall(3.2));
+  const changes = heard(session);
+  const theirs = WALLS + "  W3:\n    height: 9.9\n";
+  memory.write("/g/walls.yaml", theirs);
+  await absorbed(session, "/g/walls.yaml");
+  assert.deepEqual(session.index(), []);
+  assert.deepEqual(changes.flatMap(c => c.edits ?? []), [{ source: id, path: "/walls/W3", outcome: "conflicted", reason: "exists" }]);
+  assert.deepEqual(await session.commit(), { sources: [] });
+  assert.equal(await read(memory, "/g/walls.yaml"), theirs);
+  session.close();
+});
+
+test("FR-007: ... and even when the colleague's entry equals the staged one", async () => {
+  const { session, memory } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+  await add(session, "/walls/W3", wall(3.2));
+  const changes = heard(session);
+  memory.write("/g/walls.yaml", WALLS + W3);
+  await absorbed(session, "/g/walls.yaml");
+  assert.deepEqual(changes.flatMap(c => c.edits ?? []).map(e => [e.outcome, e.reason]), [["conflicted", "exists"]]);
+  assert.deepEqual(session.index(), []);
+  assert.equal(await read(memory, "/g/walls.yaml"), WALLS + W3);
+  session.close();
+});
+
+test("FR-007: a commit that meets the colleague's key first reports the source conflicted `exists` and writes nothing", async () => {
+  const { session, memory } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()], { quiet: true });
+  const id = idOf(session, "/g/walls.yaml");
+  await add(session, "/walls/W3", wall(3.2));
+  memory.write("/g/walls.yaml", WALLS + "  W3:\n    height: 9.9\n");
+  assert.deepEqual(await session.commit(), { sources: [{ source: id, location: "/g/walls.yaml", outcome: "conflicted", edits: [{ path: "/walls/W3", outcome: "conflicted", reason: "exists" }] }] });
+  assert.equal(await read(memory, "/g/walls.yaml"), WALLS + "  W3:\n    height: 9.9\n");
+  session.close();
+});
+
+test("FR-007: a parent a colleague has removed makes the insert conflicted `gone`", async () => {
+  const { session, memory } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+  const id = idOf(session, "/g/walls.yaml");
+  await add(session, "/walls/W3", wall(3.2));
+  const changes = heard(session);
+  memory.write("/g/walls.yaml", "doors:\n  D1: 1\n");
+  await absorbed(session, "/g/walls.yaml");
+  assert.deepEqual(session.index(), []);
+  assert.deepEqual(changes.flatMap(c => c.edits ?? []), [{ source: id, path: "/walls/W3", outcome: "conflicted", reason: "gone" }]);
+  session.close();
+});
+
+test("FR-007: a parent that has become a scalar is `gone` too: the session cannot tell it from an absent one without reading the path", async () => {
+  const { session, memory } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+  await add(session, "/walls/W3", wall(3.2));
+  const changes = heard(session);
+  memory.write("/g/walls.yaml", "walls: 5\n");
+  await absorbed(session, "/g/walls.yaml");
+  assert.deepEqual(changes.flatMap(c => c.edits ?? []).map(e => [e.outcome, e.reason]), [["conflicted", "gone"]]);
+  session.close();
+});
+
+test("FR-008: two appends to one container are spliced in staging order, in the preview and at commit; the reverse order gives the reverse text", async () => {
+  for (const [first, second, expected] of [
+    [["/walls/W3", 3.2], ["/walls/W4", 3.4], WALLS + W3 + W4],
+    [["/walls/W4", 3.4], ["/walls/W3", 3.2], WALLS + W4 + W3],
+  ] as const) {
+    const { session, memory } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+    assert.deepEqual(await add(session, first[0], wall(first[1])), { ok: true });
+    assert.deepEqual(await add(session, second[0], wall(second[1])), { ok: true });
+    assert.deepEqual(session.index().map(e => [e.start, e.end]), [[51, 51], [51, 51]]);
+    assert.equal(await previewText(session, "/g/walls.yaml"), expected);
+    await session.commit();
+    assert.equal(await read(memory, "/g/walls.yaml"), expected);
+    session.close();
+  }
+});
+
+test("FR-008: two appends at one spot survive a rebase in staging order", async () => {
+  const { session, memory } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+  await add(session, "/walls/W4", wall(3.4));
+  await add(session, "/walls/W3", wall(3.2));
+  memory.write("/g/walls.yaml", "# c\n" + WALLS); // 4 bytes: both go to 55
+  await absorbed(session, "/g/walls.yaml");
+  assert.deepEqual(session.index().map(e => [e.path, e.start, e.end]), [["/walls/W4", 55, 55], ["/walls/W3", 55, 55]]);
+  await session.commit();
+  assert.equal(await read(memory, "/g/walls.yaml"), "# c\n" + WALLS + W4 + W3);
+  session.close();
+});
+
+test("FR-008: two inserts into one empty container overlap (the writer rewrites the braces for each): the second is refused", async () => {
+  const { session } = await openOn({ "/g/walls.yaml": "walls: {}\n" }, [yamlWriter()]);
+  assert.deepEqual(await add(session, "/walls/W3", wall(3.2)), { ok: true });
+  const second = await add(session, "/walls/W4", wall(3.4));
+  assert.equal(second.ok, false);
+  assert.match(second.ok ? "" : second.reason, /overlaps the staged edit at \/walls\/W3/);
+  assert.deepEqual(session.index().map(e => e.path), ["/walls/W3"]);
+  session.close();
+});
+
+test("FR-008: any other overlap is still refused: an empty insert strictly inside another edit's range; one at its edge is not", async () => {
+  // A toy writer: a set answers 2-4, an add of "mid" answers the empty range 3, one of "edge" the empty range 4.
+  const toy: Writer = {
+    claims: keyValue.claims,
+    open: () => ({
+      ok: true,
+      document: {
+        locate: () => ({ ok: true, start: 2, end: 4 }),
+        write: () => ({ ok: true, edit: { start: 2, end: 4, bytes: bytes("Z") } }),
+        add: path => ({ ok: true, edit: { start: path === "mid" ? 3 : 4, end: path === "mid" ? 3 : 4, bytes: bytes("Y") } }),
+      },
+    }),
+  };
+  const { session } = await openOn({ "/w.conf": W }, [toy]);
+  assert.deepEqual(await session.stage("/w.conf", { op: "set", path: "x", value: "1" }), { ok: true });
+  const mid = await add(session, "mid", "1", "/w.conf");
+  assert.equal(mid.ok, false);
+  assert.match(mid.ok ? "" : mid.reason, /overlaps the staged edit at x/);
+  assert.deepEqual(await add(session, "edge", "1", "/w.conf"), { ok: true });
+  // `a=1⏎b=2⏎`: x replaces bytes 2-3 (`1⏎`) with Z; the insert at 4 goes between that and `b`.
+  assert.equal(await previewText(session, "/w.conf"), "a=ZYb=2\n");
+  session.close();
+});
+
+test("FR-007: a writer whose new version no longer offers add makes the insert unwritable", async () => {
+  // Bytes beginning with `!` open as a document without `add`.
+  const fickle: Writer = {
+    claims: keyValue.claims,
+    open: data => {
+      const opened = keyValue.open(data);
+      if (!opened.ok) return opened;
+      const { locate, write } = opened.document;
+      const add = (path: string) => ({ ok: true as const, edit: { start: data.length, end: data.length, bytes: bytes(`${path}=0\n`) } });
+      return { ok: true, document: data[0] === 0x21 ? { locate, write } : { locate, write, add } };
+    },
+  };
+  const { session, memory } = await openOn({ "/w.conf": W }, [fickle]);
+  const id = idOf(session, "/w.conf");
+  assert.deepEqual(await add(session, "c", "3", "/w.conf"), { ok: true });
+  assert.equal(await previewText(session, "/w.conf"), "a=1\nb=2\nc=0\n"); // the toy `add` writes `c=0`: only its splice is the writer's
+  const changes = heard(session);
+  memory.write("/w.conf", "!\na=1\nb=2\n");
+  await absorbed(session, "/w.conf");
+  assert.deepEqual(changes.flatMap(c => c.edits ?? []), [{ source: id, path: "c", outcome: "conflicted", reason: "unwritable" }]);
+  session.close();
+});

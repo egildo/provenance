@@ -25,6 +25,7 @@ import type {
   StageResult,
   Writer,
   WriterDocument,
+  WriterWriteResult,
 } from "./index.ts";
 
 /** An edge as held inside the session: its target is a key (canonical location or URL), not an id. */
@@ -56,7 +57,7 @@ type Staged = {
   bytes: Uint8Array;
   status: "staged" | "overrides";
   disk?: Uint8Array;
-} & ({ op: "set"; value: EditData });
+} & { op: "set" | "add"; value: EditData };
 
 /** The staged edits of one source, all against its base version. */
 interface Staging {
@@ -72,8 +73,11 @@ interface Staging {
 
 const sameBytes = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((byte, i) => byte === b[i]);
 
-const overlaps = (a: { start: number; end: number }, b: { start: number; end: number }) =>
-  (a.start < b.end && b.start < a.end) || (a.start === a.end && b.start === b.end && a.start === b.start);
+/**
+ * Whether two ranges overlap. Empty ranges at one offset do not: they are inserts at the same spot, spliced in
+ * staging order (insert-delete FR-008). An empty range strictly inside another does.
+ */
+const overlaps = (a: { start: number; end: number }, b: { start: number; end: number }) => a.start < b.end && b.start < a.end;
 
 /** A writer's range outside the bytes it was given is its bug, like an index `byteOffsets` cannot convert. */
 function checkRange(length: number, start: number, end: number, what: string) {
@@ -82,10 +86,15 @@ function checkRange(length: number, start: number, end: number, what: string) {
   }
 }
 
-/** The base with every edit spliced in, applied from the end backwards so each range stays valid. */
+/**
+ * The base with every edit spliced in, applied from the end backwards so each range stays valid. `edits`
+ * are in staging order; of several empty-ranged edits at one offset the earlier-staged ends up first in the
+ * text, which is to say it is applied last (FR-008).
+ */
 function splice(base: Uint8Array, edits: readonly Staged[]): Uint8Array {
   let out = base;
-  for (const e of [...edits].sort((a, b) => b.start - a.start || b.end - a.end)) {
+  const backwards = edits.map((edit, order) => ({ edit, order })).sort((a, b) => b.edit.start - a.edit.start || b.edit.end - a.edit.end || b.order - a.order);
+  for (const { edit: e } of backwards) {
     const next = new Uint8Array(e.start + e.bytes.length + (out.length - e.end));
     next.set(out.subarray(0, e.start));
     next.set(e.bytes, e.start);
@@ -319,17 +328,29 @@ export async function openSession(options: {
     }
     const doc = opening.document;
     for (const e of staging.edits) {
-      const found = doc.locate(e.path);
-      if (!found.ok) {
-        notices.push({ source, path: e.path, outcome: "conflicted", reason: "gone" });
-        continue;
-      }
-      checkRange(bytes.length, found.start, found.end, "the writer");
-      // The value is written again on the new bytes: its spelling can depend on its neighbours.
-      const again = doc.write(e.path, e.value);
-      if (!again.ok) {
-        notices.push({ source, path: e.path, outcome: "conflicted", reason: "unwritable" });
-        continue;
+      let again: WriterWriteResult;
+      if (e.op === "set") {
+        const found = doc.locate(e.path);
+        if (!found.ok) {
+          notices.push({ source, path: e.path, outcome: "conflicted", reason: "gone" });
+          continue;
+        }
+        checkRange(bytes.length, found.start, found.end, "the writer");
+        // The value is written again on the new bytes: its spelling can depend on its neighbours.
+        again = doc.write(e.path, e.value);
+        if (!again.ok) {
+          notices.push({ source, path: e.path, outcome: "conflicted", reason: "unwritable" });
+          continue;
+        }
+      } else {
+        // An insert (FR-007). The writer says why it refuses only in words, and the session reads no path,
+        // so it asks the new version whether the key is there: if so a colleague added it (`exists`), and if
+        // not the place it went into is gone.
+        again = doc.add ? doc.add(e.path, e.value) : { ok: false, reason: "no add" };
+        if (!again.ok) {
+          notices.push({ source, path: e.path, outcome: "conflicted", reason: !doc.add ? "unwritable" : doc.locate(e.path).ok ? "exists" : "gone" });
+          continue;
+        }
       }
       const { start, end } = again.edit;
       checkRange(bytes.length, start, end, "the writer");
@@ -341,7 +362,8 @@ export async function openSession(options: {
       }
       const now = bytes.slice(start, end);
       const was = staging.base.subarray(e.start, e.end);
-      const same = now.length === was.length && now.every((byte, i) => byte === was[i]);
+      // Only a set replaces a value that is there; an insert has no disk value to override.
+      const same = e.op !== "set" || (now.length === was.length && now.every((byte, i) => byte === was[i]));
       const moved = start !== e.start || end !== e.end;
       const status = same ? e.status : "overrides";
       const disk = same ? e.disk : now;
@@ -650,14 +672,15 @@ export async function openSession(options: {
       if (!opening.ok) return { ok: false, reason: opening.reason };
       doc = opening.document;
     }
-    const written = doc.write(path, value);
+    if (operation.op === "add" && !doc.add) return { ok: false, reason: `the writer for ${key} cannot add: its document has no add` };
+    const written = operation.op === "add" && doc.add ? doc.add(path, value) : doc.write(path, value);
     if (!written.ok) return { ok: false, reason: written.reason };
     const { start, end, bytes } = written.edit;
     checkRange(base.length, start, end, "the writer");
     const clash = (staging?.edits ?? []).find(e => e.path !== path && overlaps(e, written.edit));
     if (clash) return { ok: false, reason: `the edit overlaps the staged edit at ${clash.path}` };
     if (!staging) staged.set(key, (staging = { writer, version: node.version, base, doc, edits: [] }));
-    const edit: Staged = { path, op: "set", value, start, end, bytes, status: "staged" };
+    const edit: Staged = { path, op: operation.op, value, start, end, bytes, status: "staged" };
     // Replaced, the edit goes last: the list is in the order edits were staged, which a rebase reads.
     staging.edits = [...staging.edits.filter(e => e.path !== path), edit];
     staging.preview = undefined;
