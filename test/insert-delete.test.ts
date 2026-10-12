@@ -2,9 +2,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { jsonWriter, yamlWriter } from "@egildo/cascata/writers";
 import { openSession } from "../src/index.ts";
-import type { Change, EditData, Host, Session, Writer } from "../src/index.ts";
+import type { Change, EditData, Handler, Host, Session, Writer } from "../src/index.ts";
 import { createMemoryHost } from "../src/memory.ts";
-import { absorbed, byLocation, keyValue, keyValueShot, opened } from "./helpers.ts";
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import { createNodeHost } from "../src/node.ts";
+import { absorbed, byLocation, closing, keyValue, keyValueShot, opened, scratch, tick, unhandled } from "./helpers.ts";
 
 // The insert-and-delete round (specs/insert-delete/spec.md). Every expected value is counted by hand.
 // The key=value file /w.conf is `a=1⏎b=2⏎`, 8 bytes: a's value at 2-3, b's at 6-7.
@@ -751,4 +754,170 @@ test("FR-012: a writer that answers inside but not amend refuses an edit inside 
   assert.deepEqual(await session.stage("/w.conf", { op: "set", path: "c/x", value: "1" }), { ok: false, reason: "the writer for /w.conf cannot amend the staged edit at c: its document has no amend" });
   assert.deepEqual(await session.stage("/w.conf", { op: "set", path: "b", value: "9" }), { ok: true }); // beside it, fine
   session.close();
+});
+
+// ---- Part F: the shift guard (FR-013, FR-014) ----
+// LIST: `walls:⏎` 0-6, then each item is `  - id: Wn⏎` (11 bytes) and `    height: 3.2⏎` (16): item 0 at 7-33,
+// item 1 at 34-60, the second height's `3.2` at 57-60. 61 bytes.
+
+const LIST = "walls:\n  - id: W1\n    height: 3.2\n  - id: W2\n    height: 3.2\n";
+const TOP = "  - id: W0\n    height: 3.0\n"; // 27 bytes, added by a colleague above the first item: index 1 now names W1
+const withTop = "walls:\n" + TOP + LIST.slice(7);
+const shifts = (changes: Change[]) => changes.flatMap(c => c.edits ?? []).map(e => [e.path, e.outcome, e.reason]);
+
+test("FR-013: a set through a list that gained an item is conflicted `shifted`, not moved onto the wrong item", async () => {
+  const { session, memory } = await openOn({ "/g/walls.yaml": LIST }, [yamlWriter()]);
+  assert.deepEqual(await session.stage("/g/walls.yaml", { op: "set", path: "/walls/1/height", value: 3.4 }), { ok: true });
+  assert.deepEqual(entries(session), [["set", "/walls/1/height", 57, 60]]);
+  const changes = heard(session);
+  memory.write("/g/walls.yaml", withTop);
+  await absorbed(session, "/g/walls.yaml");
+  assert.deepEqual(session.index(), []);
+  assert.deepEqual(shifts(changes), [["/walls/1/height", "conflicted", "shifted"]]);
+  assert.deepEqual(await session.commit(), { sources: [] });
+  assert.equal(await read(memory, "/g/walls.yaml"), withTop);
+  session.close();
+});
+
+test("FR-013: an insert and a delete through the list are conflicted `shifted` too", async () => {
+  const { session, memory } = await openOn({ "/g/walls.yaml": LIST }, [yamlWriter()]);
+  assert.deepEqual(await add(session, "/walls/1/thickness", 0.2), { ok: true });
+  assert.deepEqual(await remove(session, "/walls/0"), { ok: true });
+  const changes = heard(session);
+  memory.write("/g/walls.yaml", withTop);
+  await absorbed(session, "/g/walls.yaml");
+  assert.deepEqual(session.index(), []);
+  assert.deepEqual(shifts(changes), [["/walls/1/thickness", "conflicted", "shifted"], ["/walls/0", "conflicted", "shifted"]]);
+  session.close();
+});
+
+test("FR-013: a commit that meets the shifted list first reports the source conflicted `shifted`", async () => {
+  const { session, memory } = await openOn({ "/g/walls.yaml": LIST }, [yamlWriter()], { quiet: true });
+  const id = idOf(session, "/g/walls.yaml");
+  await session.stage("/g/walls.yaml", { op: "set", path: "/walls/1/height", value: 3.4 });
+  memory.write("/g/walls.yaml", withTop);
+  assert.deepEqual(await session.commit(), { sources: [{ source: id, location: "/g/walls.yaml", outcome: "conflicted", edits: [{ path: "/walls/1/height", outcome: "conflicted", reason: "shifted" }] }] });
+  assert.equal(await read(memory, "/g/walls.yaml"), withTop);
+  session.close();
+});
+
+// MIXED: `walls:⏎` 0-6, `  W1:⏎` 7-12, `    height: 3.2⏎` 13-28 (3.2 at 25-28), `tags:⏎` 29-34, `  - a⏎` 35-40, `  - b⏎` 41-46.
+const MIXED = "walls:\n  W1:\n    height: 3.2\ntags:\n  - a\n  - b\n";
+
+test("FR-013: a set on /walls/W1/height is not shifted by a list elsewhere that changed length", async () => {
+  const { session, memory } = await openOn({ "/g/walls.yaml": MIXED }, [yamlWriter()]);
+  await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W1/height", value: 3.4 });
+  const changes = heard(session);
+  memory.write("/g/walls.yaml", "walls:\n  W1:\n    height: 3.2\ntags:\n  - z\n  - a\n  - b\n");
+  await absorbed(session, "/g/walls.yaml");
+  assert.deepEqual(session.index().map(e => [e.path, e.start, e.end, e.status]), [["/walls/W1/height", 25, 28, "staged"]]);
+  assert.deepEqual(shifts(changes), []);
+  session.close();
+});
+
+test("FR-013: an edit of an item is shifted by that list gaining an item, and not by an item of it changing in place", async () => {
+  const { session, memory } = await openOn({ "/g/walls.yaml": MIXED }, [yamlWriter()]);
+  await session.stage("/g/walls.yaml", { op: "set", path: "/tags/1", value: "B" });
+  assert.deepEqual(entries(session), [["set", "/tags/1", 45, 46]]);
+  memory.write("/g/walls.yaml", "walls:\n  W1:\n    height: 3.2\ntags:\n  - z\n  - b\n"); // same length: item 0 changed
+  await absorbed(session, "/g/walls.yaml");
+  assert.deepEqual(entries(session), [["set", "/tags/1", 45, 46]]);
+  const changes = heard(session);
+  memory.write("/g/walls.yaml", "walls:\n  W1:\n    height: 3.2\ntags:\n  - z\n  - a\n  - b\n"); // grew
+  await absorbed(session, "/g/walls.yaml");
+  assert.deepEqual(session.index(), []);
+  assert.deepEqual(shifts(changes), [["/tags/1", "conflicted", "shifted"]]);
+  session.close();
+});
+
+test("FR-013: an append (`-`) is never shifted: it goes after whatever the list now holds", async () => {
+  const { session, memory } = await openOn({ "/g/walls.yaml": MIXED }, [yamlWriter()]);
+  await add(session, "/tags/-", "c");
+  assert.deepEqual(entries(session), [["add", "/tags/-", 47, 47]]);
+  memory.write("/g/walls.yaml", MIXED + "  - z\n"); // the list grew by an append of someone else's
+  await absorbed(session, "/g/walls.yaml");
+  assert.deepEqual(entries(session), [["add", "/tags/-", 53, 53]]);
+  await session.commit();
+  assert.equal(await read(memory, "/g/walls.yaml"), MIXED + "  - z\n  - c\n");
+  session.close();
+});
+
+test("FR-013: the session asks the base document `shifted(path, newer)`, with the new version opened; a writer without it has no guard", async () => {
+  const asked: [string, boolean][] = [];
+  const guarded: Writer = {
+    claims: keyValue.claims,
+    open: data => {
+      const opened = keyValue.open(data);
+      if (!opened.ok) return opened;
+      return { ok: true, document: { ...opened.document, shifted: (path, newer) => (asked.push([path, newer.locate("b").ok && newer.locate("a").ok]), path === "b") } };
+    },
+  };
+  const { session, memory } = await openOn({ "/w.conf": W }, [guarded]);
+  const id = idOf(session, "/w.conf");
+  await session.stage("/w.conf", { op: "set", path: "a", value: "7" });
+  await session.stage("/w.conf", { op: "set", path: "b", value: "8" });
+  const changes = heard(session);
+  memory.write("/w.conf", "# note\na=1\nb=2\n");
+  await absorbed(session, "/w.conf");
+  assert.deepEqual(asked, [["a", true], ["b", true]]); // asked of each edit, with a document of the new bytes
+  assert.deepEqual(changes.flatMap(c => c.edits ?? []).map(e => [e.path, e.outcome, e.reason]), [["a", "moved", undefined], ["b", "conflicted", "shifted"]]);
+  assert.equal(changes[0]?.edits?.[0]?.source, id);
+  const unguarded = await openOn({ "/w.conf": W }, [keyValue]);
+  await unguarded.session.stage("/w.conf", { op: "set", path: "b", value: "8" });
+  unguarded.memory.write("/w.conf", "# note\na=1\nb=2\n");
+  await absorbed(unguarded.session, "/w.conf");
+  assert.equal(unguarded.session.index().length, 1);
+  unguarded.session.close();
+  session.close();
+});
+
+// ---- The rollback, and a real disk (FR-016, the handoff's snapshot rule) ----
+
+test("a rolled-back batch restores the opened document with the edits: a later stage is against the old base", async () => {
+  const throwing: Handler = {
+    claims: location => location.endsWith(".md"),
+    analyze(source) {
+      if (source.includes("BOOM")) throw new Error("handler broke");
+      return { requests: [] };
+    },
+  };
+  const memory = createMemoryHost({ "/g/walls.yaml": WALLS, "/n.md": "fine\n" });
+  const session = await openSession({ host: memory, entry: "/g/walls.yaml", handlers: [throwing], writers: [yamlWriter()], writable: ["/"] });
+  await session.addRoot("/n.md");
+  await add(session, "/walls/W3", wall(3.2));
+  const before = session.index();
+  const seen = await unhandled(async () => {
+    memory.write("/g/walls.yaml", "# c\n" + WALLS); // rebased first ...
+    memory.write("/n.md", "BOOM\n"); // ... then the batch throws, and is rolled back
+    await tick();
+  });
+  assert.equal(seen.length, 1);
+  assert.deepEqual(session.index(), before);
+  assert.deepEqual(entries(session), [["add", "/walls/W3", 51, 51]]);
+  // The opened document went back with the base: this edit is located in the old bytes (25-28), not the new (29-32).
+  assert.deepEqual(await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W1/height", value: 3.4 }), { ok: true });
+  assert.deepEqual(entries(session), [["add", "/walls/W3", 51, 51], ["set", "/walls/W1/height", 25, 28]]);
+  assert.equal(await previewText(session, "/g/walls.yaml"), "walls:\n  W1:\n    height: 3.4\n  W2:\n    height: 3.2\n" + W3);
+  session.close();
+});
+
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+
+test("on a real disk: an insert and a delete survive a comment added by another process, and land in the file", async t => {
+  const dir = await scratch(t, "provenance-insdel-");
+  const file = path.join(dir, "walls.yaml");
+  await fs.writeFile(file, WALLS);
+  const session = closing(t, await openSession({ host: createNodeHost({ debounce: 50 }), entry: file, handlers: [], writers: [yamlWriter()], writable: [dir] }));
+  await sleep(100); // let the platform's watchers start before the test writes
+  const changes: Change[] = [];
+  session.onChange(c => changes.push(c));
+  assert.deepEqual(await add(session, "/walls/W3", wall(3.2), file), { ok: true });
+  assert.deepEqual(await remove(session, "/walls/W1", file), { ok: true });
+  await fs.writeFile(file, "# from survey\n" + WALLS); // 14 bytes
+  for (let waited = 0; changes.length === 0 && waited < 5000; waited += 25) await sleep(25);
+  assert.deepEqual(entries(session), [["add", "/walls/W3", 65, 65], ["remove", "/walls/W1", 21, 43]]);
+  const report = await session.commit();
+  assert.deepEqual(report.sources.map(s => [s.outcome, s.edits.map(e => e.outcome)]), [["written", ["written", "written"]]]);
+  assert.equal(await fs.readFile(file, "utf8"), "# from survey\n" + "walls:\n  W2:\n    height: 3.2\n" + W3);
+  assert.deepEqual(await fs.readdir(dir), ["walls.yaml"]);
 });

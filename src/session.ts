@@ -336,6 +336,11 @@ export async function openSession(options: {
     }
     const doc = opening.document;
     for (const e of staging.edits) {
+      // The shift guard (FR-013) comes first: through a list that changed length, the path may name another item.
+      if (staging.doc.shifted?.(e.path, doc)) {
+        notices.push({ source, path: e.path, outcome: "conflicted", reason: "shifted" });
+        continue;
+      }
       let again: WriterWriteResult;
       if (e.op === "set") {
         const found = doc.locate(e.path);

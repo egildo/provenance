@@ -76,9 +76,10 @@ export type EditData = string | number | bigint | boolean | null | readonly Edit
  * Why a staged edit was dropped as conflicted: `gone`, its path is no longer found in the source's
  * new version (or the source left the graph); `overlap`, its new range overlaps an earlier-staged
  * edit's; `unwritable`, its writer found the path but refused to write the value on the new bytes; `exists`
- * (an insert), the key was added on disk meanwhile; `changed` (a delete), the entry was changed on disk meanwhile.
+ * (an insert), the key was added on disk meanwhile; `changed` (a delete), the entry was changed on disk meanwhile; `shifted`, a list
+ * along its path changed length, so an index in it may name another item.
  */
-export type ConflictReason = "gone" | "overlap" | "unwritable" | "exists" | "changed";
+export type ConflictReason = "gone" | "overlap" | "unwritable" | "exists" | "changed" | "shifted";
 
 /** What `stage` is asked to do, JSON Patch's operation object with Cascata's verb names. */
 export type EditOperation =
@@ -244,6 +245,11 @@ export interface WriterDocument {
    * words, or `{ inside: false }` when the operation's path is not below it. Pure; the staged value is not changed.
    */
   amend?(staged: { readonly path: string; readonly value: EditData }, operation: EditOperation): AmendResult;
+  /**
+   * Whether a list along `path` has a different length in `newer`, a later version of this document opened by
+   * the same writer: an index step in it may now name another item. Absent: no guard (a CSS path has no indexes).
+   */
+  shifted?(path: string, newer: WriterDocument): boolean;
 }
 
 export interface Resolver {
