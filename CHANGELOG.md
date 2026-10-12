@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.1 — 2026-10-12
+
+- **A dropped edit says why, in the writer's words.** Where a writer's refusal caused a rebase to conflict an edit (`gone`, `exists`, `unwritable`), the notice and the commit report carry `detail`, the writer's reason. Outcomes the session decides alone (`overlap`, `changed`, `shifted`) carry none.
+- **A writer that contradicts itself throws.** If its `inside` says an edit lies within a staged edit and its `amend` then says it does not, staging rejects, naming both answers, and the index is unchanged. It used to fall through to ordinary staging.
+- Recorded, unchanged: `changed` is strict, so a colleague's reformat drops a pending delete; a delete restaged as a set goes last.
+
 ## 0.6.0 — 2026-10-12
 
 **Insert and delete** ([spec](specs/insert-delete/spec.md), [fixes](specs/insert-delete/fixes.md), [design](docs/write-back.md)), on Cascata 1.15's opened document and 1.16's verbs for a caller that rebases. A minor release because the editing API changes shape.
