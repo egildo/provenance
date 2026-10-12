@@ -8,7 +8,7 @@ import type {
   Edge,
   EditNotice,
   EditOperation,
-  EditValue,
+  EditData,
   CommitReport,
   Findings,
   Handler,
@@ -49,15 +49,14 @@ type State =
 type Node = State & { readonly id: string; readonly key: string; links: Link[]; readonly bytes?: Uint8Array };
 
 /** One staged edit as held: the splice, and what finds it again. */
-interface Staged {
+type Staged = {
   path: string;
-  value: EditValue;
   start: number;
   end: number;
   bytes: Uint8Array;
   status: "staged" | "overrides";
   disk?: Uint8Array;
-}
+} & ({ op: "set"; value: EditData });
 
 /** The staged edits of one source, all against its base version. */
 interface Staging {
@@ -346,7 +345,7 @@ export async function openSession(options: {
       const moved = start !== e.start || end !== e.end;
       const status = same ? e.status : "overrides";
       const disk = same ? e.disk : now;
-      kept.push({ path: e.path, value: e.value, bytes: again.edit.bytes, start, end, status, ...(disk === undefined ? {} : { disk }) });
+      kept.push({ path: e.path, op: e.op, value: e.value, bytes: again.edit.bytes, start, end, status, ...(disk === undefined ? {} : { disk }) });
       if (!same) notices.push({ source, path: e.path, outcome: "overrides", start, end, disk: now });
       else if (moved) notices.push({ source, path: e.path, outcome: "moved", start, end });
       else if (!sameBytes(again.edit.bytes, e.bytes)) notices.push({ source, path: e.path, outcome: "respelled", start, end });
@@ -658,7 +657,7 @@ export async function openSession(options: {
     const clash = (staging?.edits ?? []).find(e => e.path !== path && overlaps(e, written.edit));
     if (clash) return { ok: false, reason: `the edit overlaps the staged edit at ${clash.path}` };
     if (!staging) staged.set(key, (staging = { writer, version: node.version, base, doc, edits: [] }));
-    const edit: Staged = { path, value, start, end, bytes, status: "staged" };
+    const edit: Staged = { path, op: "set", value, start, end, bytes, status: "staged" };
     // Replaced, the edit goes last: the list is in the order edits were staged, which a rebase reads.
     staging.edits = [...staging.edits.filter(e => e.path !== path), edit];
     staging.preview = undefined;
@@ -738,6 +737,7 @@ export async function openSession(options: {
           (e): StagedEdit => ({
             source: idFor(key),
             path: e.path,
+            op: e.op,
             value: e.value,
             base: staging.version,
             start: e.start,

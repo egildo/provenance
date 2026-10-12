@@ -28,7 +28,7 @@ test("case 7: staging at a path again replaces the edit; it never stacks", async
   assert.deepEqual(await session.stage("/w.conf", { op: "set", path: "b", value: "4" }), { ok: true });
   const index = session.index();
   assert.equal(index.length, 1);
-  assert.deepEqual(index[0], { source: idOf(session, "/w.conf"), path: "b", value: "4", base: sha(bytes(W)), start: 6, end: 7, status: "staged" });
+  assert.deepEqual(index[0], { source: idOf(session, "/w.conf"), path: "b", op: "set", value: "4", base: sha(bytes(W)), start: 6, end: 7, status: "staged" });
   const preview = await session.preview(idOf(session, "/w.conf"));
   assert.equal(text(preview?.bytes ?? new Uint8Array()), "a=1\nb=4\n");
   session.close();
@@ -175,7 +175,7 @@ test("case 3: a disk change elsewhere moves the edit to where its path now is", 
   const id = idOf(session, "/w.conf");
   memory.write("/w.conf", "# note\na=1\nb=2\n"); // "# note⏎" is 7 bytes, so b's value moves from 6-7 to 13-14
   await absorbed(session, "/w.conf");
-  assert.deepEqual(session.index(), [{ source: id, path: "b", value: "3", base: sha(bytes("# note\na=1\nb=2\n")), start: 13, end: 14, status: "staged" }]);
+  assert.deepEqual(session.index(), [{ source: id, path: "b", op: "set", value: "3", base: sha(bytes("# note\na=1\nb=2\n")), start: 13, end: 14, status: "staged" }]);
   assert.deepEqual(changes, [{ added: [], removed: [], changed: [id], edits: [{ source: id, path: "b", outcome: "moved", start: 13, end: 14 }] }]);
   assert.equal(text((await session.preview(id))?.bytes ?? new Uint8Array()), "# note\na=1\nb=3\n");
   session.close();
@@ -188,7 +188,7 @@ test("case 4: the same value changed on disk is overridden, carrying the disk's 
   const id = idOf(session, "/w.conf");
   memory.write("/w.conf", "a=1\nb=5\n");
   await absorbed(session, "/w.conf");
-  assert.deepEqual(session.index(), [{ source: id, path: "b", value: "3", base: sha(bytes("a=1\nb=5\n")), start: 6, end: 7, status: "overrides", disk: bytes("5") }]);
+  assert.deepEqual(session.index(), [{ source: id, path: "b", op: "set", value: "3", base: sha(bytes("a=1\nb=5\n")), start: 6, end: 7, status: "overrides", disk: bytes("5") }]);
   assert.deepEqual(changes, [{ added: [], removed: [], changed: [id], edits: [{ source: id, path: "b", outcome: "overrides", start: 6, end: 7, disk: bytes("5") }] }]);
   session.close();
 });
@@ -200,7 +200,7 @@ test("case 5: a disk change to another value is kept, and says nothing about the
   const id = idOf(session, "/w.conf");
   memory.write("/w.conf", "a=9\nb=2\n");
   await absorbed(session, "/w.conf");
-  assert.deepEqual(session.index(), [{ source: id, path: "b", value: "3", base: sha(bytes("a=9\nb=2\n")), start: 6, end: 7, status: "staged" }]);
+  assert.deepEqual(session.index(), [{ source: id, path: "b", op: "set", value: "3", base: sha(bytes("a=9\nb=2\n")), start: 6, end: 7, status: "staged" }]);
   assert.deepEqual(changes, [{ added: [], removed: [], changed: [id] }]);
   session.close();
 });
@@ -639,9 +639,9 @@ test("a rebase that respells an edit without moving it says so", async () => {
   session.close();
 });
 
-test("a value is a scalar: an object is a compile error, and the scalars compile", async () => {
+test("a value is EditData: a plain object is a compile error, and the scalars compile", async () => {
   const { session } = await open();
-  // @ts-expect-error an object is not an EditValue
+  // @ts-expect-error a plain object is not EditData
   await session.stage("/w.conf", { op: "set", path: "a", value: { not: "a scalar" } });
   await session.stage("/w.conf", { op: "set", path: "a", value: "1" });
   await session.stage("/w.conf", { op: "set", path: "a", value: 1 });

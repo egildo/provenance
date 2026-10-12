@@ -65,10 +65,12 @@ export interface SourceCommit {
 }
 
 /**
- * The value an edit sets: a scalar. The same union, under the same name, as Cascata's writers take
- * (`EditValue`), so a writer from either library fits the other by shape and not by method bivariance.
+ * The value an edit sets: a scalar, a sequence or a mapping (a `Map` of string keys), nested. The same union,
+ * under the same name, as Cascata's writers take (`EditData`), so a writer from either library fits the other
+ * by shape and not by method bivariance. A plain object is not one: its array-index keys reorder and
+ * `__proto__` is swallowed, so a writer refuses it as a programmer error.
  */
-export type EditValue = string | number | bigint | boolean | null;
+export type EditData = string | number | bigint | boolean | null | readonly EditData[] | ReadonlyMap<string, EditData>;
 
 /**
  * Why a staged edit was dropped as conflicted: `gone`, its path is no longer found in the source's
@@ -78,7 +80,7 @@ export type EditValue = string | number | bigint | boolean | null;
 export type ConflictReason = "gone" | "overlap" | "unwritable";
 
 /** What `stage` is asked to do, JSON Patch's operation object with Cascata's verb names. */
-export type EditOperation = { readonly op: "set"; readonly path: string; readonly value: EditValue };
+export type EditOperation = { readonly op: "set"; readonly path: string; readonly value: EditData };
 
 export type StageResult = { readonly ok: true } | { readonly ok: false; readonly reason: string };
 
@@ -86,7 +88,10 @@ export type StageResult = { readonly ok: true } | { readonly ok: false; readonly
 export interface StagedEdit {
   readonly source: string;
   readonly path: string;
-  readonly value: EditValue;
+  /** What the edit does at `path`. */
+  readonly op: EditOperation["op"];
+  /** The value as staged (a `Map` stays a `Map`); present for `set` and `add`, absent for `remove`. */
+  readonly value?: EditData;
   /** The base version the byte address is against. */
   readonly base: string;
   readonly start: number;
@@ -217,7 +222,7 @@ export interface WriterDocument {
   /** Where the value at `path` is in the bytes as opened, or why it is not there. */
   locate(path: string): WriterLocateResult;
   /** The one splice that sets the value at `path`, in the source's own style, or why it cannot. */
-  write(path: string, value: EditValue): WriterWriteResult;
+  write(path: string, value: EditData): WriterWriteResult;
 }
 
 export interface Resolver {

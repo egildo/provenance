@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { jsonWriter, yamlWriter } from "@egildo/cascata/writers";
 import { openSession } from "../src/index.ts";
-import type { Change, Host, Session, Writer } from "../src/index.ts";
+import type { Change, EditData, Host, Session, Writer } from "../src/index.ts";
 import { createMemoryHost } from "../src/memory.ts";
 import { absorbed, byLocation, keyValue, keyValueShot, opened } from "./helpers.ts";
 
@@ -127,5 +128,74 @@ test("FR-003: a one-shot writer, adapted by `opened`, behaves as before (set, co
   const disk = await memory.read("/w.conf");
   assert.equal(disk.ok && text(disk.bytes), "# note\na=1\nb=3\n");
   assert.equal(bytes(W).length, 8);
+  session.close();
+});
+
+// ---- Part B: containers (FR-004, FR-005) ----
+// write-back.md's walls.yaml, 51 bytes: `walls:⏎` 0-6, `  W1:⏎` 7-12, `    height: 3.2⏎` 13-28 (3.2 at 25-28),
+// `  W2:⏎` 29-34, `    height: 3.2⏎` 35-50 (the mapping under W2 is bytes 39-50, 3.2 at 47-50).
+
+const WALLS = "walls:\n  W1:\n    height: 3.2\n  W2:\n    height: 3.2\n";
+const read = async (memory: Host, location: string) => {
+  const result = await memory.read(location);
+  return result.ok ? text(result.bytes) : result.reason;
+};
+
+test("FR-004: a set may carry a mapping; only the value's bytes move, the mapping is written block-style under W2", async () => {
+  const { session, memory } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+  const wall = new Map<string, EditData>([["height", 3.4], ["thickness", 0.2]]);
+  assert.deepEqual(await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W2", value: wall }), { ok: true });
+  // The mapping under W2 is 39-50 (`height: 3.2`); it is replaced by two entries, the second at the first's indentation.
+  assert.deepEqual(session.index().map(e => [e.path, e.start, e.end]), [["/walls/W2", 39, 50]]);
+  const after = "walls:\n  W1:\n    height: 3.2\n  W2:\n    height: 3.4\n    thickness: 0.2\n";
+  assert.equal(await previewText(session, "/g/walls.yaml"), after);
+  await session.commit();
+  assert.equal(await read(memory, "/g/walls.yaml"), after);
+  assert.equal(after.slice(0, 39), WALLS.slice(0, 39)); // L3: nothing before the value moved
+  assert.equal(after.slice(-1), WALLS.slice(-1)); // nor the final newline
+  session.close();
+});
+
+test("FR-004: a set may carry a sequence (JSON), the bigints written as integers", async () => {
+  const { session, memory } = await openOn({ "/d.json": '{"a": 1}' }, [jsonWriter()]);
+  assert.deepEqual(await session.stage("/d.json", { op: "set", path: "/a", value: [1n, 2n] }), { ok: true });
+  assert.deepEqual(session.index().map(e => [e.start, e.end]), [[6, 7]]); // `{"a": 1}`: the 1 is byte 6
+  assert.equal(await previewText(session, "/d.json"), '{"a": [1, 2]}');
+  await session.commit();
+  assert.equal(await read(memory, "/d.json"), '{"a": [1, 2]}');
+  session.close();
+});
+
+test("FR-005: index() carries the op, and the value as staged: a Map stays the same Map", async () => {
+  const { session } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+  const wall = new Map<string, EditData>([["height", 3.4]]);
+  await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W2", value: wall });
+  await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W1/height", value: 3.4 });
+  const [container, scalar] = session.index();
+  assert.equal(container?.op, "set");
+  assert.ok(container?.value instanceof Map);
+  assert.equal(container?.value, wall);
+  assert.equal(scalar?.op, "set");
+  assert.equal(scalar?.value, 3.4);
+  session.close();
+});
+
+test("FR-004: a plain object is not EditData: a compile error, and Cascata's writer throws, so the call rejects and nothing is staged", async () => {
+  const { session } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+  // @ts-expect-error a plain object is not EditData
+  await assert.rejects(session.stage("/g/walls.yaml", { op: "set", path: "/walls/W2", value: { height: 3.4 } }), TypeError);
+  assert.deepEqual(session.index(), []);
+  assert.deepEqual(await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W2/height", value: 3.4 }), { ok: true }); // the session carries on
+  session.close();
+});
+
+test("FR-004: a staged container is rebased like any value: a comment added above moves it", async () => {
+  const { session, memory } = await openOn({ "/g/walls.yaml": WALLS }, [yamlWriter()]);
+  await session.stage("/g/walls.yaml", { op: "set", path: "/walls/W2", value: new Map<string, EditData>([["height", 3.4], ["thickness", 0.2]]) });
+  memory.write("/g/walls.yaml", "# c\n" + WALLS); // 4 bytes: 39-50 becomes 43-54
+  await absorbed(session, "/g/walls.yaml");
+  assert.deepEqual(session.index().map(e => [e.start, e.end, e.status]), [[43, 54, "staged"]]);
+  await session.commit();
+  assert.equal(await read(memory, "/g/walls.yaml"), "# c\n" + "walls:\n  W1:\n    height: 3.2\n  W2:\n    height: 3.4\n    thickness: 0.2\n");
   session.close();
 });

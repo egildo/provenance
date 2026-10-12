@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { TestContext } from "node:test";
-import type { Edge, EditValue, Handler, Host, Session, Source, Writer, WriterDocument } from "../src/index.ts";
+import type { Edge, EditData, Handler, Host, Session, Source, Writer, WriterDocument } from "../src/index.ts";
 
 /** A test-only include handler: `@include{src="…"}` on its own line requires its target. */
 export const include: Handler = {
@@ -48,7 +48,7 @@ export async function absorbed(session: Session, root: string): Promise<void> {
 export interface OneShotWriter {
   claims(location: string): boolean;
   locate(bytes: Uint8Array, path: string): ReturnType<WriterDocument["locate"]>;
-  write(bytes: Uint8Array, path: string, value: EditValue): ReturnType<WriterDocument["write"]>;
+  write(bytes: Uint8Array, path: string, value: EditData): ReturnType<WriterDocument["write"]>;
 }
 
 /** A one-shot writer as a Writer: `open` keeps the bytes and every verb asks the one-shot again. */
