@@ -1,6 +1,6 @@
 {
   "name": "@egildo/provenance",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Knows, for one rendered document, every source involved, how the sources depend on each other, and where each came from.",
   "type": "module",
   "license": "MIT",
@@ -51,7 +51,7 @@
     "postcss-value-parser": "^4.2.0"
   },
   "devDependencies": {
-    "@egildo/cascata": "^1.16.0",
+    "@egildo/cascata": "^1.16.1",
     "@types/node": "^22",
     "typescript": "^5.9"
   }

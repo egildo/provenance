@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.0 — 2026-10-12
+
+**Insert and delete** ([spec](specs/insert-delete/spec.md), [fixes](specs/insert-delete/fixes.md), [design](docs/write-back.md)), on Cascata 1.15's opened document and 1.16's verbs for a caller that rebases. A minor release because the editing API changes shape.
+
+- **A writer is `claims` and `open`.** `open(bytes)` parses once and answers `locate`, `write` and, optionally, `add`, `remove`, `inside`, `amend` and `shifted`. Each source version is opened once, however many edits it serves. Cascata 1.16's writers fit by shape.
+- **`stage(location, { op, path, value? })`** takes JSON Patch's operation object with Cascata's verb names: `set`, `add`, `remove`. It replaces `stage(location, path, value)`. A staged edit carries its `op`.
+- **Containers.** `EditData` replaces `EditValue`: a value may be a list or a `Map`, nested.
+- **Insert and delete,** in the file's own style (the writer's). Two inserts at one spot keep their staging order.
+- **One principle for conflicts.** A set follows last-saver-wins. An insert or a delete never overwrites a colleague's work on the same entry: a rebased insert whose key was added on disk is conflicted `exists`, and a rebased delete whose entry was changed on disk, attached comments included, is conflicted `changed`.
+- **An edit inside a staged insert amends it,** through the writer's `inside` and `amend`, so paths stay the format's language. An edit inside a staged delete is refused.
+- **The shift guard.** An edit through a list that changed length since its base is conflicted `shifted`, so an index never silently names another item.
+- **Waiting.** A version on disk that does not open (a file saved mid-typing) no longer drops the staged edits. They wait against their base, with the writer's words; a commit of that source is refused; the next version that opens is rebased onto.
+- **Refusal codes.** A writer's refusal may carry a `code`; the session reads `edit-target-exists`, `edit-target-absent` and `edit-parent-scalar` (Cascata 1.16.1's).
+
+Breaking: `stage`'s signature, the `Writer` shape, `EditValue` (now `EditData`), and an unparseable version no longer conflicts edits as `unwritable`.
+
 ## 0.5.0 — 2026-10-08
 
 **Write-back's first slice: the editing stage** ([design](docs/write-back.md), [spec](specs/editing/spec.md), [#4](https://github.com/egildo/provenance/issues/4)), and its first end-to-end proof with Cascata ([spec](specs/joining/spec.md)).
