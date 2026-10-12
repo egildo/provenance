@@ -24,7 +24,7 @@ Written with a capital, Provenance is the library.
 
 **Commit.** Writing every staged edit to disk, one file at a time, each atomically. A file that no longer hashes to its base version is rebased first; a value changed on both sides is written as staged — the last to commit wins, per value — and reported. Afterwards the written versions become the base versions and the index empties. *Amended 2026-10-08 (`write-back.md`): it refused a file that had moved.* Not a version-control commit; one may follow, and that is the consumer's call. *(editing)*
 
-**Conflicted.** The state of a staged edit whose target is gone from a source's new version after a rebase, or whose range, after a rebase, overlaps an edit staged before it (the later-staged yields). It carries its reason: `gone` (the path, or the source, is gone), `overlap`, or `unwritable` (the writer found the path but refused to write the value there again). In the first version it is dropped and reported, never blocking. *Amended 2026-10-08: a value changed on both sides is no longer conflicted; the staged edit overrides it, with a notice.* *(editing)*
+**Conflicted.** The state of a staged edit whose target is gone from a source's new version after a rebase, or whose range, after a rebase, overlaps an edit staged before it (the later-staged yields). It carries its reason: `gone` (the path, or the source, is gone), `overlap`, or `unwritable` (the writer found the path but refused to write the value there again); since `specs/insert-delete/`, also `exists` (an insert's key was added on disk), `changed` (a deleted entry was changed on disk) and `shifted` (a list along the path changed length). In the first version it is dropped and reported, never blocking. *Amended 2026-10-08: a value changed on both sides is no longer conflicted; the staged edit overrides it, with a notice.* *(editing)*
 
 **Declared.** An edge origin: the edge was found by a handler parsing a source.
 
@@ -42,7 +42,7 @@ Written with a capital, Provenance is the library.
 
 **Host.** Whatever supplies Provenance with everything outside the call: bytes, canonical identity, path facts, watch events and writes. It answers what is there, never what is allowed. A Node host ships as a separate entry point.
 
-**Index.** The staged edits of a session, in groups, with a position map per touched source from its preview back to its base. *(editing)* *The first slice (`specs/editing/`) builds the index without groups or a position map: one edit per path, per source.*
+**Index.** The staged edits of a session, in groups, with a position map per touched source from its preview back to its base. *(editing)* *The first slice (`specs/editing/`) builds the index without groups or a position map: one edit per path, per source.* *Since `specs/insert-delete/` an edit carries its operation (`set`, `add`, `remove`), and an edit inside a staged insertion amends it rather than joining the index.*
 
 **Leaf.** A source no handler parses, such as an image or a font. Addressable as a whole or by byte range, a possible edge target, and replaceable by a file operation.
 
@@ -56,7 +56,7 @@ Written with a capital, Provenance is the library.
 
 **Probe.** A location a resolver tried while resolving a request, whether or not anything was there. A file appearing at a probe re-resolves the edge that probed it. Probes belong to the cached result of a resolution, and a cache hit re-registers them.
 
-**Rebase.** Moving staged edits onto a source's new version when the file changes on disk: each edit asks the format plug-in to find its semantic address in the new version and to write its value there again. Found, it moves; gone, it is conflicted. *Amended 2026-10-08 (`write-back.md`): it searched for the old span's bytes with a little context, which fails exactly when the value itself changed.* *(editing)* An edit that moved keeps its status: one that overrides a value changed on disk goes on overriding it until it is staged again.
+**Rebase.** Moving staged edits onto a source's new version when the file changes on disk: each edit asks the format plug-in to find its semantic address in the new version and to write its value there again. Found, it moves; gone, it is conflicted. *Amended 2026-10-12 (`specs/insert-delete/`): an insert or a delete is conflicted rather than overriding a colleague's work on the same entry, and any edit through a list that changed length is conflicted `shifted`.* *Amended 2026-10-08 (`write-back.md`): it searched for the old span's bytes with a little context, which fails exactly when the value itself changed.* *(editing)* An edit that moved keeps its status: one that overrides a value changed on disk goes on overriding it until it is staged again.
 
 **Reconciliation.** The query that matches declared edges against observed ones and names every disagreement. It can run at any time, because observation is a window rather than a moment. *(observation)*
 

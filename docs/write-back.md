@@ -40,8 +40,9 @@ An edit carries **two addresses**:
 | **Byte address** | source, base version, start, end, new bytes | applying the edit exactly, now |
 | **Semantic address** | document, path in the format's own terms, intent | finding the target again after the bytes moved |
 
-The **intent** is one of: *set this value*, *insert this child* (parked), *delete this node*
-(parked). A path is the format plug-in's language: a JSON Pointer for YAML and JSON, a selector and
+The **intent** is one of: *set this value*, *insert this child*, *delete this node* — the operations
+`set`, `add` and `remove` (JSON Patch's operation object, with Cascata's verb names; *amended
+2026-10-12, `specs/insert-delete/`: the last two were parked*). A path is the format plug-in's language: a JSON Pointer for YAML and JSON, a selector and
 property for CSS, a heading path for Markdown, an element id for HTML and SVG.
 
 Prior art: the Language Server Protocol's `WorkspaceEdit` — a list of `TextEdit`s (range plus new
@@ -187,13 +188,30 @@ case was written down.
 | One plug-in per format | Two parsers reporting positions in the same format |
 | Nothing silent | An override, a drop, or a refusal without a notice |
 
+## Inserting and deleting (2026-10-12, `specs/insert-delete/`)
+
+Built on Cascata 1.15's opened document and `add`/`remove`, which copy the nearest sibling's style. Three
+rules the owner ruled, each a case:
+
+- **A set follows last-saver-wins (L5); an insert or a delete never overwrites a colleague's work on the
+  same entry.** A rebased insert whose key a colleague has meanwhile added is conflicted `exists`, even when
+  the two entries are equal; a rebased delete whose entry a colleague has changed is conflicted `changed`; a
+  delete whose entry is already gone is `gone`. A set changes one value, which is why overriding it is
+  acceptable; an insert or a delete acts on a whole entry, and someone else's work may live inside it.
+- **An edit inside a staged insertion amends it**: the staged value changes, and removing the inserted entry
+  unstages it. An edit inside a staged delete is refused. What lies inside what is the writer's to say
+  (`inside`, `amend`), so paths stay the format's language.
+- **The shift guard**: a staged edit whose path runs through a list that changed length since its base is
+  conflicted `shifted`, so an index never silently names another item. Finding the item again by content
+  (GNU `patch`'s offset by context) is the named upgrade.
+
+Two inserts at one spot are spliced in staging order; two into one empty container overlap (the writer
+rewrites the `{}` for each) and the second is refused — stage the container whole.
+
 ## Parked, with what brings each back
 
 - **Where an edit to an inherited value lands** — into the layer that won (as DevTools edits the
   winning CSS rule) or a new override nearer the user. Back when a consumer needs to edit a default.
-- **Inserting and deleting entities** — needs format-preserving trees and style inference (copy the
-  nearest sibling's formatting: `toml_edit`'s decor, PostCSS's raws, Roslyn's trivia). Back with the
-  first consumer that adds a wall.
 - **Saving several files at once** — atomic per file (write a temporary file, rename), with a story
   for stopping halfway across files. Back when one edit spans two files.
 - **Inverses of computed values** — the tool's, but a helper may emerge once two tools have written

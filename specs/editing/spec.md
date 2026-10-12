@@ -122,7 +122,7 @@ red); stack edits at one path (case 7 red).
 
 ## Not in this milestone
 
-Groups and confirmation; file operations (create, delete, rename); inserting and deleting nodes;
+Groups and confirmation; file operations (create, delete, rename); inserting and deleting nodes (since built: `specs/insert-delete/`);
 several files atomically; Markdown units (#2); stamps (#6); the real YAML plug-in (Cascata's); the
 cascade question (which document an edit to a merged value belongs in).
 
