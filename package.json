@@ -1,18 +1,21 @@
 {
   "name": "@egildo/provenance",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Knows, for one rendered document, every source involved, how the sources depend on each other, and where each came from.",
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@github.com/egildo/provenance.git"
+    "url": "git+https://codeberg.org/egildo/provenance.git"
   },
+  "homepage": "https://codeberg.org/egildo/provenance",
+  "bugs": "https://codeberg.org/egildo/provenance/issues",
   "engines": {
     "node": ">=22"
   },
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
   },
   "files": [
     "dist"
@@ -51,7 +54,7 @@
     "postcss-value-parser": "^4.2.0"
   },
   "devDependencies": {
-    "@egildo/cascata": "^1.16.1",
+    "@egildo/cascata": "^1.16.2",
     "@types/node": "^22",
     "typescript": "^5.9"
   }

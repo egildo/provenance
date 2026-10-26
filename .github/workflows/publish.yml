@@ -1,0 +1,35 @@
+# Runs on the GitHub mirror when Codeberg pushes a release tag (vX.Y.Z).
+# Publishes by trusted publishing (OIDC): no npm token is stored anywhere.
+# Re-run it to retry; a version already on npm is skipped.
+# Provenance is off: npm requires package.json's repository to be the repository
+# that built the package, and that is Codeberg while the build runs on GitHub.
+name: publish
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - name: Publish if this version is not yet on npm
+        run: |
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "$name@$version is already on npm"
+          else
+            npm publish --provenance=false
+          fi

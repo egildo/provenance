@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.2 — 2026-10-26
+
+- **Provenance moves to the public npm registry.** It was published to GitHub Packages, which asks for a token even to read. `@egildo/provenance` is now on npmjs.org, its repository is Codeberg, and a workflow publishes a release tag from the GitHub mirror, by npm trusted publishing. The code is unchanged.
+
 ## 0.6.1 — 2026-10-12
 
 - **A dropped edit says why, in the writer's words.** Where a writer's refusal caused a rebase to conflict an edit (`gone`, `exists`, `unwritable`), the notice and the commit report carry `detail`, the writer's reason. Outcomes the session decides alone (`overlap`, `changed`, `shifted`) carry none.

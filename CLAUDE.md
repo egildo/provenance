@@ -14,5 +14,6 @@ The release drill, confirmed by the owner at 0.6.0. "Bump it up" approves exactl
 3. Bump `version` in `package.json` and add the release's entry at the top of `CHANGELOG.md`, dated, with its
    breaking changes named. Commit as `vX.Y.Z: <the round's name>`.
 4. `git tag vX.Y.Z`, then `git push origin main vX.Y.Z`.
-5. `npm publish` (GitHub Packages, from `publishConfig`; `prepublishOnly` tests and builds). Verify: origin `main`
-   equals local, the tag is on origin, `npm view @egildo/provenance version` answers the new version.
+5. The push to Codeberg reaches the GitHub mirror, and `.github/workflows/publish.yml` publishes the tag to npmjs.org
+   by trusted publishing (`prepublishOnly` tests and builds). Verify: origin `main` equals local, the tag is on
+   origin, the run is green, `npm view @egildo/provenance version` answers the new version.
