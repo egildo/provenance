@@ -460,3 +460,21 @@ test("FR-006: the restored session keeps its own copy of the saved bytes: writin
   assert.deepEqual(second.save().sources[0]?.bytes, bytes("x: 5\ny: 2\n"));
   second.close();
 });
+
+test("FR-006: the shift guard reaches across the gap: a list that gained an item while the page was closed conflicts the edit `shifted`", async () => {
+  // insert-delete's LIST: item 1's height `3.2` is at 57-60; a colleague adds an item above the first.
+  const LIST = "walls:\n  - id: W1\n    height: 3.2\n  - id: W2\n    height: 3.2\n";
+  const withTop = "walls:\n  - id: W0\n    height: 3.0\n" + LIST.slice(7);
+  const memory = createMemoryHost({ "/g/walls.yaml": LIST });
+  const first = await openOn(memory, "/g/walls.yaml");
+  await first.stage("/g/walls.yaml", { op: "set", path: "/walls/1/height", value: 3.4 });
+  const saved = first.save();
+  first.close();
+  memory.write("/g/walls.yaml", withTop);
+  const second = await openOn(memory, "/g/walls.yaml");
+  const changes = heard(second);
+  await second.restore(saved);
+  assert.deepEqual(notices(changes).map(n => [n.path, n.outcome, n.reason]), [["/walls/1/height", "conflicted", "shifted"]]);
+  assert.deepEqual(second.index(), []);
+  second.close();
+});
