@@ -31,6 +31,12 @@ export interface Session {
    * Writing it anywhere is the embedder's.
    */
   save(): SavedIndex;
+  /**
+   * Stages a saved index again (specs/saveable-index/spec.md): per source, its edits are staged against the saved base
+   * bytes through the writer, in saved order, and then rebased onto the version the session holds. A source that
+   * already has staged edits, or whose bytes do not hash to the saved base, is refused and the others restored.
+   */
+  restore(saved: SavedIndex): Promise<RestoreReport>;
   /** The source's base with every staged edit spliced in, or `undefined` when none is staged. */
   preview(id: string): Promise<Preview | undefined>;
   /**
@@ -142,6 +148,32 @@ export interface SavedEdit {
   readonly value?: EditData;
   readonly status: "staged" | "overrides";
   readonly disk?: Uint8Array;
+}
+
+export interface RestoreReport {
+  /** `refused`: the whole save, for a `format` this version does not know (`reason` says so, and `sources` is empty). */
+  readonly outcome: "restored" | "refused";
+  readonly reason?: string;
+  /** One entry per saved source, in the save's order. */
+  readonly sources: readonly SourceRestore[];
+}
+
+export interface SourceRestore {
+  readonly location: string;
+  /**
+   * `refused`: the source is not in the session's graph, no writer claims it, it already has staged edits, its saved
+   * bytes do not hash to its base, or none of its edits could be staged; `reason` says which. Otherwise `restored`:
+   * what the rebase onto the session's version then did arrives as the usual `Change` notices.
+   */
+  readonly outcome: "restored" | "refused";
+  readonly reason?: string;
+  /** Per saved edit, in saved order; empty when the source was refused before its edits were tried. */
+  readonly edits: readonly {
+    readonly path: string;
+    readonly outcome: "restored" | "refused";
+    /** The writer's or the stage's words, as `StageResult` carries them. */
+    readonly reason?: string;
+  }[];
 }
 
 /** A source's base plus its staged edits, with the content hash that names it as a version. */

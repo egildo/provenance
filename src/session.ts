@@ -16,12 +16,15 @@ import type {
   Host,
   ReadPass,
   RenderManifest,
+  RestoreReport,
+  SavedIndex,
   Resolver,
   Preview,
   Session,
   SessionHost,
   Source,
   SourceCommit,
+  SourceRestore,
   StagedEdit,
   StageResult,
   Writer,
@@ -706,19 +709,31 @@ export async function openSession(options: {
     };
   }
 
-  async function stageEdit(location: string, operation: EditOperation): Promise<StageResult> {
-    const { path } = operation;
+  /** Whether the source at `location` can have edits staged: in the graph, readable, and claimed by a writer. */
+  async function stageable(location: string) {
     const key = await keyFor(location);
     const node = nodes.get(key);
-    if (!node) return { ok: false, reason: "not a source in the session's graph" };
-    if (node.state === "external") return { ok: false, reason: `${key} is external, and cannot be edited` };
-    if (node.state === "refused") return { ok: false, reason: `${key} could not be read: ${node.reason}` };
+    if (!node) return { ok: false as const, reason: "not a source in the session's graph" };
+    if (node.state === "external") return { ok: false as const, reason: `${key} is external, and cannot be edited` };
+    if (node.state === "refused") return { ok: false as const, reason: `${key} could not be read: ${node.reason}` };
     const writer = writers.find(w => w.claims(key));
-    if (!writer) return { ok: false, reason: `no writer claims ${key}` };
+    if (!writer) return { ok: false as const, reason: `no writer claims ${key}` };
+    return { ok: true as const, key, node, writer };
+  }
+
+  /**
+   * Stages one edit. `against` is a restore's (saved-index FR-006): the base to stage a source's first edit against
+   * in place of the one the session holds; a source already being staged keeps the base it has.
+   */
+  async function stageEdit(location: string, operation: EditOperation, against?: { readonly version: string; readonly bytes: Uint8Array }): Promise<StageResult> {
+    const { path } = operation;
+    const found = await stageable(location);
+    if (!found.ok) return found;
+    const { key, node, writer } = found;
     let staging = staged.get(key);
     // The base the session holds: the bytes of the version it last took in. A disk that has moved
     // since is the rebase's business, when the host reports it.
-    const base = staging?.base ?? ("bytes" in node ? node.bytes : undefined);
+    const base = staging?.base ?? against?.bytes ?? ("bytes" in node ? node.bytes : undefined);
     if (!base) return { ok: false, reason: `${key} was not read` };
     let doc = staging?.doc;
     if (!doc) {
@@ -778,12 +793,46 @@ export async function openSession(options: {
     checkRange(base.length, start, end, "the writer");
     const clash = others.find(e => e.path !== path && overlaps(e, written.edit));
     if (clash) return { ok: false, reason: `the edit overlaps the staged edit at ${clash.path}` };
-    if (!staging) staged.set(key, (staging = { writer, version: node.version, base, doc, edits: [] }));
+    if (!staging) staged.set(key, (staging = { writer, version: against?.version ?? node.version, base, doc, edits: [] }));
     const edit: Staged = { path, start, end, bytes, status: "staged", ...(effective.op === "remove" ? { op: "remove" as const } : { op: effective.op, value: effective.value }) };
     // Replaced, the edit goes last: the list is in the order edits were staged, which a rebase reads.
     staging.edits = [...staging.edits.filter(e => e.path !== path), edit];
     staging.preview = undefined;
     return { ok: true };
+  }
+
+  /** Stages one saved source again against its saved base, then rebases it onto the version the session holds (saved-index FR-006). */
+  async function restoreSource(entry: SavedIndex["sources"][number]): Promise<SourceRestore> {
+    const refused = (reason: string): SourceRestore => ({ location: entry.location, outcome: "refused", reason, edits: [] });
+    const found = await stageable(entry.location);
+    if (!found.ok) return refused(found.reason);
+    const { key, node } = found;
+    if (staged.has(key)) return refused(`${key} already has staged edits`);
+    const held = "bytes" in node ? node.bytes : undefined;
+    if (!held) return refused(`${key} was not read`);
+    if ((await sha256(entry.bytes)) !== entry.base) return refused("the saved bytes do not hash to the saved base version");
+    const against = { version: entry.base, bytes: entry.bytes.slice() };
+    const edits: SourceRestore["edits"][number][] = [];
+    for (const saved of entry.edits) {
+      const operation: EditOperation | undefined = saved.op === "remove" ? { op: "remove", path: saved.path } : saved.value === undefined ? undefined : { op: saved.op, path: saved.path, value: saved.value };
+      const result: StageResult = operation === undefined ? { ok: false, reason: `a ${saved.op} needs a value` } : await stageEdit(entry.location, operation, against);
+      if (!result.ok) {
+        edits.push({ path: saved.path, outcome: "refused", reason: result.reason });
+        continue;
+      }
+      edits.push({ path: saved.path, outcome: "restored" });
+      // Its status is part of what was saved (FR-003): staging made it plain `staged`.
+      const put = staged.get(key)?.edits.find(e => e.path === saved.path);
+      if (put) {
+        put.status = saved.status;
+        if (saved.disk !== undefined) put.disk = saved.disk.slice();
+      }
+    }
+    const staging = staged.get(key);
+    if (!staging) return { location: entry.location, outcome: "refused", reason: "none of its edits could be restored", edits };
+    // The session's version is not the saved base: the usual rebase, which says what it did through the notices.
+    if (node.version !== entry.base) rebase(key, staging, held, node.version);
+    return { location: entry.location, outcome: "restored", edits };
   }
 
   /** Whether a commit may write here: under a writable root, judged on whole segments of canonical locations. */
@@ -972,6 +1021,16 @@ export async function openSession(options: {
         })),
       })),
     }),
+    restore(saved) {
+      let result: RestoreReport = { outcome: "refused", reason: "the session is closed", sources: [] };
+      if (saved.format !== 1) return Promise.resolve({ outcome: "refused", reason: `the saved index has format ${String(saved.format)}, and only format 1 is known`, sources: [] });
+      return serialize(async () => {
+        const sources: SourceRestore[] = [];
+        for (const entry of saved.sources) sources.push(await restoreSource(entry));
+        result = { outcome: "restored", sources };
+        return report([]);
+      }).then(() => result);
+    },
     unstage: (location, path) =>
       serialize(async () => {
         const key = await keyFor(location);
