@@ -797,10 +797,24 @@ export async function openSession(options: {
     return false;
   }
 
-  /** Commits one source's staged edits (FR-009). The edits leave the index only when written or dropped. */
-  async function commitSource(key: string, staging: Staging, changed: string[]): Promise<SourceCommit> {
+  /** A source ready to write: its bytes, the disk's bytes to put back, and what its edits will be reported as. */
+  interface Ready {
+    readonly key: string;
+    readonly source: string;
+    readonly bytes: Uint8Array;
+    readonly disk: Uint8Array;
+    readonly version: string;
+    readonly edits: SourceCommit["edits"];
+  }
+
+  /**
+   * Prepares one source for a commit (atomic-commit FR-001): the checks, the read, the rebase, and the bytes to write.
+   * Touches no disk. A source that cannot be written, or that lost an edit, comes back as the report entry that
+   * says so (`cause`); it stops the commit.
+   */
+  async function prepare(key: string, staging: Staging): Promise<Ready | { readonly cause: SourceCommit }> {
     const source = idFor(key);
-    const nothing = (outcome: "refused" | "failed", reason: string): SourceCommit => ({ source, location: key, outcome, reason, edits: [] });
+    const nothing = (outcome: "refused" | "failed", reason: string) => ({ cause: { source, location: key, outcome, reason, edits: [] } as SourceCommit });
     if (!(await isWritable(key))) return nothing("refused", `${key} is outside every writable root`);
     if (host.write === undefined) return nothing("refused", "the host cannot write");
     const read = await host.read(key);
@@ -810,19 +824,79 @@ export async function openSession(options: {
     if (version !== staging.version) rebase(key, staging, read.bytes, version);
     if (staging.waiting !== undefined && staged.get(key) === staging) return nothing("refused", `the file on disk does not open: ${staging.waiting}`);
     const dropped = notices.slice(first).filter(n => n.outcome === "conflicted" && n.source === source);
-    const edits: SourceCommit["edits"][number][] = dropped.map(n => ({ path: n.path, outcome: "conflicted", ...(n.reason === undefined ? {} : { reason: n.reason }), ...(n.detail === undefined ? {} : { detail: n.detail }) }));
     const remaining = staged.get(key);
-    if (!remaining) return { source, location: key, outcome: "conflicted", edits };
+    if (dropped.length > 0 || !remaining) {
+      const edits: SourceCommit["edits"] = dropped.map(n => ({ path: n.path, outcome: "conflicted", ...(n.reason === undefined ? {} : { reason: n.reason }), ...(n.detail === undefined ? {} : { detail: n.detail }) }));
+      return { cause: { source, location: key, outcome: "conflicted", edits } };
+    }
     const bytes = splice(remaining.base, remaining.edits);
-    const written = await host.write(key, bytes);
-    if (!written.ok) return nothing("failed", written.reason);
-    for (const e of remaining.edits) edits.push(e.status === "overrides" && e.disk ? { path: e.path, outcome: "overrode", disk: e.disk } : { path: e.path, outcome: "written" });
-    staged.delete(key);
-    writtenKeys.push(key);
-    const fresh = await load(key, false);
-    if (versionOf(fresh) !== versionOf(nodes.get(key))) changed.push(key);
-    nodes.set(key, fresh);
-    return { source, location: key, outcome: "written", version: await sha256(bytes), edits };
+    const edits = remaining.edits.map((e): SourceCommit["edits"][number] => (e.status === "overrides" && e.disk ? { path: e.path, outcome: "overrode", disk: e.disk } : { path: e.path, outcome: "written" }));
+    return { key, source, bytes, disk: read.bytes, version: await sha256(bytes), edits };
+  }
+
+  /**
+   * Commits a set of staged sources, all or none (atomic-commit): prepare every one, and only if none is a cause write
+   * them in order; a failed write puts the written ones back, newest first. `commit()` passes the whole index;
+   * a group would pass its sources.
+   */
+  async function commitSources(entries: readonly (readonly [string, Staging])[], changed: string[]): Promise<CommitReport> {
+    const put = (key: string, bytes: Uint8Array) => (host.write ? host.write(key, bytes) : Promise.resolve({ ok: false as const, reason: "the host cannot write" }));
+    const prepared: (Ready | { readonly cause: SourceCommit })[] = [];
+    for (const [key, staging] of entries) prepared.push(await prepare(key, staging));
+    let stopper = prepared.flatMap(p => ("cause" in p ? [p.cause.location] : []))[0];
+    const wrote: Ready[] = [];
+    const fresh = new Map<string, Node>();
+    let failed: SourceCommit | undefined;
+    if (stopper === undefined) {
+      for (const p of prepared) {
+        if ("cause" in p) continue;
+        const written = await put(p.key, p.bytes);
+        if (!written.ok) {
+          failed = { source: p.source, location: p.key, outcome: "failed", reason: written.reason, edits: [] };
+          stopper = p.key;
+          break;
+        }
+        writtenKeys.push(p.key);
+        wrote.push(p);
+        // Analysed before the next write: a handler that throws on the new text stops the commit here, as it always did.
+        fresh.set(p.key, await load(p.key, false));
+      }
+    }
+    // Undo (FR-004): the host's own write, after checking the disk still holds what this commit wrote (ruling 6).
+    const unrestored = new Map<string, string>();
+    if (failed) {
+      for (const p of wrote.reverse()) {
+        const was = await host.read(p.key);
+        let why: string | undefined;
+        if (!was.ok) why = `putting ${p.key} back failed: could not read it: ${was.reason}`;
+        else if ((await sha256(was.bytes)) !== p.version) why = `${p.key} was saved by someone else after this commit wrote it; left as it is`;
+        else {
+          // ponytail: a colleague can still save between the read above and this write; closing it needs a host verb that writes only if unchanged (parked).
+          const back = await put(p.key, p.disk);
+          if (!back.ok) why = `putting ${p.key} back failed: ${back.reason}`;
+        }
+        if (why === undefined) writtenKeys.splice(writtenKeys.indexOf(p.key), 1);
+        else unrestored.set(p.key, why);
+      }
+    }
+    const sources: SourceCommit[] = [];
+    for (const p of prepared) {
+      if ("cause" in p) sources.push(p.cause);
+      else if (failed && failed.location === p.key) sources.push(failed);
+      else if (unrestored.has(p.key)) sources.push({ source: p.source, location: p.key, outcome: "unrestored", reason: unrestored.get(p.key), version: p.version, edits: p.edits });
+      else if (stopper !== undefined) sources.push({ source: p.source, location: p.key, outcome: "aborted", reason: `the commit was aborted by ${stopper}`, edits: [] });
+      else sources.push({ source: p.source, location: p.key, outcome: "written", version: p.version, edits: p.edits });
+    }
+    // What is on disk now leaves the index and the node catches up (a source put back keeps its edits and its node).
+    for (const p of prepared) {
+      if ("cause" in p || !writtenKeys.includes(p.key)) continue;
+      staged.delete(p.key);
+      const node = fresh.get(p.key);
+      if (!node) continue;
+      if (versionOf(node) !== versionOf(nodes.get(p.key))) changed.push(p.key);
+      nodes.set(p.key, node);
+    }
+    return { outcome: stopper === undefined ? "committed" : "aborted", sources };
   }
 
   const session: Session = {
@@ -906,12 +980,10 @@ export async function openSession(options: {
       }).then(() => result);
     },
     commit() {
-      let result: CommitReport = { sources: [] };
+      let result: CommitReport = { outcome: "committed", sources: [] };
       return serialize(async () => {
         const changed: string[] = [];
-        const sources: SourceCommit[] = [];
-        for (const [key, staging] of [...staged]) sources.push(await commitSource(key, staging, changed));
-        result = { sources };
+        result = await commitSources([...staged], changed);
         return report(changed);
       }).then(() => result);
     },

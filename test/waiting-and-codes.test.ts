@@ -59,6 +59,7 @@ test("FIX-001: a commit while the disk does not open is refused for that source,
   await session.stage("/w.conf", { op: "set", path: "a", value: "7" });
   memory.write("/w.conf", "!\na=1\nb=2\n");
   assert.deepEqual(await session.commit(), {
+    outcome: "aborted",
     sources: [{ source: id, location: "/w.conf", outcome: "refused", reason: "the file on disk does not open: not a conf file", edits: [] }],
   });
   assert.equal(await read(memory, "/w.conf"), "!\na=1\nb=2\n");

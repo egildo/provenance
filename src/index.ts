@@ -28,14 +28,17 @@ export interface Session {
   /** The source's base with every staged edit spliced in, or `undefined` when none is staged. */
   preview(id: string): Promise<Preview | undefined>;
   /**
-   * Writes every source with staged edits, one file at a time and each atomically, rebasing first
-   * where the disk moved. Not atomic across files: the report says exactly what landed.
+   * Writes every source with staged edits, or none: each is checked and rebased first, and one that cannot
+   * be written (or an edit dropped on rebase) aborts the commit; a write that fails puts back the files
+   * already written. Each file is written atomically by the host. The report says exactly what landed.
    */
   commit(): Promise<CommitReport>;
   close(): void;
 }
 
 export interface CommitReport {
+  /** `committed`: every source landed (an empty index is committed). `aborted`: nothing did, bar any `unrestored` source. */
+  readonly outcome: "committed" | "aborted";
   /** One entry per source that had staged edits, in the order they were first staged. */
   readonly sources: readonly SourceCommit[];
 }
@@ -44,13 +47,15 @@ export interface SourceCommit {
   readonly source: string;
   readonly location: string;
   /**
-   * `written`; `refused` (outside every writable root, or the host has no write verb); `failed`
-   * (the host's reason; the edits are kept); `conflicted` (every edit's target was gone, so
-   * nothing was written).
+   * `written`; `refused` (outside every writable root, the host has no write verb, or the disk version does not
+   * open); `failed` (the host's reason; the edits are kept); `conflicted` (at least one edit was dropped on
+   * rebase, and `edits` lists the dropped ones); `aborted` (this source was fine, but another one stopped the
+   * commit, and `reason` names it; nothing of this source is on disk and its edits stay staged); `unrestored`
+   * (this commit wrote it and could not put it back; `reason` says why, its edits are on disk and left the index).
    */
-  readonly outcome: "written" | "refused" | "failed" | "conflicted";
+  readonly outcome: "written" | "refused" | "failed" | "conflicted" | "aborted" | "unrestored";
   readonly reason?: string;
-  /** The version written. */
+  /** The version this commit wrote (also for `unrestored`). */
   readonly version?: string;
   /** What became of each edit that was written or dropped; empty when refused or failed. */
   readonly edits: readonly {

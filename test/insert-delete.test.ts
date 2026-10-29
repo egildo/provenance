@@ -259,7 +259,7 @@ test("FR-007: a key a colleague has added meanwhile makes the insert conflicted 
   await absorbed(session, "/g/walls.yaml");
   assert.deepEqual(session.index(), []);
   assert.deepEqual(changes.flatMap(c => c.edits ?? []), [{ source: id, path: "/walls/W3", outcome: "conflicted", reason: "exists", detail: writerSays(theirs, d => d.add?.("/walls/W3", wall(3.2))) }]);
-  assert.deepEqual(await session.commit(), { sources: [] });
+  assert.deepEqual(await session.commit(), { outcome: "committed", sources: [] });
   assert.equal(await read(memory, "/g/walls.yaml"), theirs);
   session.close();
 });
@@ -281,7 +281,7 @@ test("FR-007: a commit that meets the colleague's key first reports the source c
   const id = idOf(session, "/g/walls.yaml");
   await add(session, "/walls/W3", wall(3.2));
   memory.write("/g/walls.yaml", WALLS + "  W3:\n    height: 9.9\n");
-  assert.deepEqual(await session.commit(), { sources: [{ source: id, location: "/g/walls.yaml", outcome: "conflicted", edits: [{ path: "/walls/W3", outcome: "conflicted", reason: "exists", detail: writerSays(WALLS + "  W3:\n    height: 9.9\n", d => d.add?.("/walls/W3", wall(3.2))) }] }] });
+  assert.deepEqual(await session.commit(), { outcome: "aborted", sources: [{ source: id, location: "/g/walls.yaml", outcome: "conflicted", edits: [{ path: "/walls/W3", outcome: "conflicted", reason: "exists", detail: writerSays(WALLS + "  W3:\n    height: 9.9\n", d => d.add?.("/walls/W3", wall(3.2))) }] }] });
   assert.equal(await read(memory, "/g/walls.yaml"), WALLS + "  W3:\n    height: 9.9\n");
   session.close();
 });
@@ -488,7 +488,7 @@ test("FR-010: an entry a colleague has changed makes the delete conflicted `chan
   await absorbed(session, "/g/walls.yaml");
   assert.deepEqual(session.index(), []);
   assert.deepEqual(changes.flatMap(c => c.edits ?? []), [{ source: id, path: "/walls/W1", outcome: "conflicted", reason: "changed" }]);
-  assert.deepEqual(await session.commit(), { sources: [] });
+  assert.deepEqual(await session.commit(), { outcome: "committed", sources: [] });
   assert.equal(await read(memory, "/g/walls.yaml"), theirs);
   session.close();
 });
@@ -498,7 +498,7 @@ test("FR-010: a commit that meets the colleague's change first reports the sourc
   const id = idOf(session, "/g/walls.yaml");
   await remove(session, "/walls/W1");
   memory.write("/g/walls.yaml", "walls:\n  W1:\n    height: 3.0\n  W2:\n    height: 3.2\n");
-  assert.deepEqual(await session.commit(), { sources: [{ source: id, location: "/g/walls.yaml", outcome: "conflicted", edits: [{ path: "/walls/W1", outcome: "conflicted", reason: "changed" }] }] });
+  assert.deepEqual(await session.commit(), { outcome: "aborted", sources: [{ source: id, location: "/g/walls.yaml", outcome: "conflicted", edits: [{ path: "/walls/W1", outcome: "conflicted", reason: "changed" }] }] });
   session.close();
 });
 
@@ -626,7 +626,7 @@ test("FR-011, staged insert, same path: removing the inserted entry unstages it"
   assert.deepEqual(await remove(session, "/walls/W4"), { ok: true });
   assert.deepEqual(session.index(), []);
   assert.equal(await session.preview(idOf(session, "/g/walls.yaml")), undefined);
-  assert.deepEqual(await session.commit(), { sources: [] });
+  assert.deepEqual(await session.commit(), { outcome: "committed", sources: [] });
   session.close();
 });
 
@@ -752,7 +752,7 @@ test("FR-013: a set through a list that gained an item is conflicted `shifted`, 
   await absorbed(session, "/g/walls.yaml");
   assert.deepEqual(session.index(), []);
   assert.deepEqual(shifts(changes), [["/walls/1/height", "conflicted", "shifted"]]);
-  assert.deepEqual(await session.commit(), { sources: [] });
+  assert.deepEqual(await session.commit(), { outcome: "committed", sources: [] });
   assert.equal(await read(memory, "/g/walls.yaml"), withTop);
   session.close();
 });
@@ -774,7 +774,7 @@ test("FR-013: a commit that meets the shifted list first reports the source conf
   const id = idOf(session, "/g/walls.yaml");
   await session.stage("/g/walls.yaml", { op: "set", path: "/walls/1/height", value: 3.4 });
   memory.write("/g/walls.yaml", withTop);
-  assert.deepEqual(await session.commit(), { sources: [{ source: id, location: "/g/walls.yaml", outcome: "conflicted", edits: [{ path: "/walls/1/height", outcome: "conflicted", reason: "shifted" }] }] });
+  assert.deepEqual(await session.commit(), { outcome: "aborted", sources: [{ source: id, location: "/g/walls.yaml", outcome: "conflicted", edits: [{ path: "/walls/1/height", outcome: "conflicted", reason: "shifted" }] }] });
   assert.equal(await read(memory, "/g/walls.yaml"), withTop);
   session.close();
 });

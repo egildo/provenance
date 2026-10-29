@@ -316,7 +316,7 @@ test("case 1: a staged edit is written, only its value moves, and the session re
   await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   const changes = heard(session);
   const report = await session.commit();
-  assert.deepEqual(report, { sources: [{ source: id, location: "/w.conf", outcome: "written", version: sha(bytes("a=1\nb=3\n")), edits: [{ path: "b", outcome: "written" }] }] });
+  assert.deepEqual(report, { outcome: "committed", sources: [{ source: id, location: "/w.conf", outcome: "written", version: sha(bytes("a=1\nb=3\n")), edits: [{ path: "b", outcome: "written" }] }] });
   assert.deepEqual(writes, [["/w.conf", "a=1\nb=3\n"]]);
   assert.equal(await read(memory, "/w.conf"), "a=1\nb=3\n");
   assert.deepEqual(session.index(), []);
@@ -345,12 +345,12 @@ test("case 2 and 12: nothing staged, nothing written; and a second commit writes
   const memory = createMemoryHost({ "/w.conf": W });
   const { host, writes } = spied(memory);
   const session = await openOn(host);
-  assert.deepEqual(await session.commit(), { sources: [] });
+  assert.deepEqual(await session.commit(), { outcome: "committed", sources: [] });
   assert.deepEqual(writes, []);
   await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   await session.commit();
   assert.equal(writes.length, 1);
-  assert.deepEqual(await session.commit(), { sources: [] });
+  assert.deepEqual(await session.commit(), { outcome: "committed", sources: [] });
   assert.equal(writes.length, 1);
   session.close();
 });
@@ -422,7 +422,7 @@ test("case 6: a conflicted edit is never written", async () => {
   await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   memory.write("/w.conf", "a=1\n");
   await absorbed(session, "/w.conf");
-  assert.deepEqual(await session.commit(), { sources: [] });
+  assert.deepEqual(await session.commit(), { outcome: "committed", sources: [] });
   assert.deepEqual(writes, []);
   session.close();
 });
@@ -435,7 +435,7 @@ test("case 6, unabsorbed: a commit that finds the path gone reports the source c
   await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   memory.write("/w.conf", "a=1\n");
   const report = await session.commit();
-  assert.deepEqual(report, { sources: [{ source: id, location: "/w.conf", outcome: "conflicted", edits: [{ path: "b", outcome: "conflicted", reason: "gone", detail: "no key b" }] }] });
+  assert.deepEqual(report, { outcome: "aborted", sources: [{ source: id, location: "/w.conf", outcome: "conflicted", edits: [{ path: "b", outcome: "conflicted", reason: "gone", detail: "no key b" }] }] });
   assert.deepEqual(writes, []);
   assert.deepEqual(session.index(), []);
   session.close();
@@ -460,7 +460,7 @@ test("case 9: with no writable root, a commit is refused and the edit is kept", 
   const id = idOf(session, "/w.conf");
   await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   const report = await session.commit();
-  assert.deepEqual(report, { sources: [{ source: id, location: "/w.conf", outcome: "refused", reason: "/w.conf is outside every writable root", edits: [] }] });
+  assert.deepEqual(report, { outcome: "aborted", sources: [{ source: id, location: "/w.conf", outcome: "refused", reason: "/w.conf is outside every writable root", edits: [] }] });
   assert.deepEqual(writes, []);
   assert.equal(await read(memory, "/w.conf"), W);
   assert.equal(session.index().length, 1);
@@ -474,7 +474,7 @@ test("case 11: a host that fails the write: the report says why, and the edit is
   const id = idOf(session, "/w.conf");
   await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   const report = await session.commit();
-  assert.deepEqual(report, { sources: [{ source: id, location: "/w.conf", outcome: "failed", reason: "disk full", edits: [] }] });
+  assert.deepEqual(report, { outcome: "aborted", sources: [{ source: id, location: "/w.conf", outcome: "failed", reason: "disk full", edits: [] }] });
   assert.equal(await read(memory, "/w.conf"), W);
   assert.equal(session.index().length, 1);
   session.close();
@@ -503,13 +503,13 @@ test("case 13: the sandbox is per source, judged on whole path segments", async 
   await session.stage("/x/x.conf", { op: "set", path: "a", value: "2" });
   await session.stage("/dd/y.conf", { op: "set", path: "a", value: "2" }); // "/dd" is not under "/d"
   const report = await session.commit();
-  assert.deepEqual(report.sources.map(s => [s.location, s.outcome]), [["/d/w.conf", "written"], ["/x/x.conf", "refused"], ["/dd/y.conf", "refused"]]);
-  assert.deepEqual(writes, [["/d/w.conf", "a=1\nb=3\n"]]);
-  assert.deepEqual(session.index().map(e => e.path), ["a", "a"]); // the refused ones are kept
+  assert.deepEqual(report.sources.map(s => [s.location, s.outcome]), [["/d/w.conf", "aborted"], ["/x/x.conf", "refused"], ["/dd/y.conf", "refused"]]); // atomic-commit: a refused source stops the commit
+  assert.deepEqual(writes, []);
+  assert.deepEqual(session.index().map(e => e.path), ["b", "a", "a"]); // every edit is kept
   session.close();
 });
 
-test("a failure on one source does not stop the others; the report says what landed", async () => {
+test("a failure on one source stops the commit: the others are not written, and the report says so", async () => {
   const memory = createMemoryHost({ "/w.conf": W, "/v.conf": "a=1\n" });
   const writes: string[] = [];
   const host: Host = {
@@ -524,10 +524,10 @@ test("a failure on one source does not stop the others; the report says what lan
   await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   await session.stage("/v.conf", { op: "set", path: "a", value: "2" });
   const report = await session.commit();
-  assert.deepEqual(report.sources.map(s => [s.location, s.outcome]), [["/w.conf", "failed"], ["/v.conf", "written"]]);
-  assert.deepEqual(writes, ["/w.conf", "/v.conf"]);
-  assert.equal(await read(memory, "/v.conf"), "a=2\n");
-  assert.deepEqual(session.index().map(e => e.path), ["b"]);
+  assert.deepEqual(report.sources.map(s => [s.location, s.outcome]), [["/w.conf", "failed"], ["/v.conf", "aborted"]]); // atomic-commit: w fails first, v is never written
+  assert.deepEqual(writes, ["/w.conf"]);
+  assert.equal(await read(memory, "/v.conf"), "a=1\n");
+  assert.deepEqual(session.index().map(e => e.path), ["b", "a"]);
   session.close();
 });
 
@@ -691,8 +691,9 @@ test("fix 2: the same, when only the commit meets the moved disk", async () => {
   await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   memory.write("/w.conf", BANG);
   const report = await session.commit();
-  assert.deepEqual(report.sources.map(s => [s.outcome, s.edits.map(e => [e.path, e.outcome, e.reason])]), [["written", [["b", "conflicted", "overlap"], ["a", "written", undefined]]]]);
-  assert.equal(await read(memory, "/w.conf"), "!\na=77\nb=2\n");
+  assert.deepEqual(report.sources.map(s => [s.outcome, s.edits.map(e => [e.path, e.outcome, e.reason])]), [["conflicted", [["b", "conflicted", "overlap"]]]]); // atomic-commit: one dropped edit aborts, a is not written
+  assert.equal(await read(memory, "/w.conf"), BANG);
+  assert.deepEqual(session.index().map(e => e.path), ["a"]);
   session.close();
 });
 
@@ -734,6 +735,6 @@ test("round 2: the same, when only the commit meets the moved disk", async () =>
   const id = idOf(session, "/w.conf");
   await session.stage("/w.conf", { op: "set", path: "b", value: "3" });
   memory.write("/w.conf", BANG);
-  assert.deepEqual(await session.commit(), { sources: [{ source: id, location: "/w.conf", outcome: "conflicted", edits: [{ path: "b", outcome: "conflicted", reason: "unwritable", detail: "no longer writable" }] }] });
+  assert.deepEqual(await session.commit(), { outcome: "aborted", sources: [{ source: id, location: "/w.conf", outcome: "conflicted", edits: [{ path: "b", outcome: "conflicted", reason: "unwritable", detail: "no longer writable" }] }] });
   session.close();
 });

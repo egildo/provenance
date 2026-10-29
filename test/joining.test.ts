@@ -103,7 +103,7 @@ test("case 1: set W2's height to 3.4; only bytes 47-50 change, and Cascata reads
 
 test("case 2: nothing staged, commit writes nothing, and the file is its 51 bytes", async () => {
   const { memory, session, writes } = await openWalls(WALLS);
-  assert.deepEqual(await session.commit(), { sources: [] });
+  assert.deepEqual(await session.commit(), { outcome: "committed", sources: [] });
   assert.deepEqual(writes, []);
   assert.equal(await disk(memory), WALLS);
   session.close();
@@ -166,7 +166,7 @@ test("case 6: a colleague deletes W2: the edit is dropped, reported, and nothing
   await absorbed(session, "/g/walls.yaml");
   assert.deepEqual(session.index(), []);
   assert.deepEqual(changes.flatMap(c => c.edits ?? []).map(e => [e.path, e.outcome, e.reason]), [["/walls/W2/height", "conflicted", "gone"]]);
-  assert.deepEqual(await session.commit(), { sources: [] });
+  assert.deepEqual(await session.commit(), { outcome: "committed", sources: [] });
   assert.deepEqual(writes, []);
   assert.equal(await disk(memory), withoutW2);
   session.close();
@@ -270,7 +270,7 @@ test("FR-005: a value supplied by the schema's provide is refused as inherited, 
   assert.equal(!result.ok && result.code, "edit-target-inherited");
   assert.match(!result.ok ? result.reason : "", /house\.schema\.yaml/);
   assert.deepEqual(session.index(), []);
-  assert.deepEqual(await session.commit(), { sources: [] });
+  assert.deepEqual(await session.commit(), { outcome: "committed", sources: [] });
   assert.deepEqual(writes, []);
   session.close();
 });
