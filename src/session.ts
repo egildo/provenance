@@ -830,6 +830,18 @@ export async function openSession(options: {
       return { cause: { source, location: key, outcome: "conflicted", edits } };
     }
     const bytes = splice(remaining.base, remaining.edits);
+    // Analysed now, before any write (FR-012, ruled): a handler that throws on the new text stops the commit with
+    // nothing on disk. The findings are held for this piece of work, so the load after the write hits the cache.
+    const handler = handlers.find(h => h.claims(key));
+    if (handler) {
+      let text: string | undefined;
+      try {
+        text = decoder.decode(bytes);
+      } catch {
+        text = undefined;
+      }
+      if (text !== undefined) findingsFor(handler, await sha256(bytes), text);
+    }
     const edits = remaining.edits.map((e): SourceCommit["edits"][number] => (e.status === "overrides" && e.disk ? { path: e.path, outcome: "overrode", disk: e.disk } : { path: e.path, outcome: "written" }));
     return { key, source, bytes, disk: read.bytes, version: await sha256(bytes), edits };
   }

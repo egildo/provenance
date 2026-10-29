@@ -392,6 +392,39 @@ test("FR-012: a writer that throws in prepare rejects the commit with nothing wr
   session.close();
 });
 
+test("FR-012, ruled: a handler that throws on the second source's new text leaves both disks untouched and both edits staged; the first is analysed once", async () => {
+  let calls = 0;
+  const handler = {
+    claims: (location: string) => location.endsWith(".conf"),
+    analyze(text: string) {
+      calls++;
+      if (text.includes("d=BOOM")) throw new Error("handler broke");
+      return { requests: [] };
+    },
+  };
+  const memory = createMemoryHost({ "/a.conf": A, "/b.conf": B });
+  const { host, writes } = wrapped(memory, { quiet: true });
+  const session = await openSession({ host, entry: "/a.conf", handlers: [handler], writers: [keyValue], writable: ["/"] });
+  await session.addRoot("/b.conf");
+  await set(session, "/a.conf", "a", "9");
+  await set(session, "/b.conf", "d", "BOOM");
+  const before = session.index();
+  calls = 0;
+  await assert.rejects(session.commit(), /handler broke/);
+  assert.equal(calls, 2); // a's new text, then b's, which throws
+  assert.deepEqual(writes, []);
+  assert.equal(await read(memory, "/a.conf"), A);
+  assert.equal(await read(memory, "/b.conf"), B);
+  assert.deepEqual(session.index(), before);
+  // a clean commit analyses each new text once: the load after the write hits the cache
+  await set(session, "/b.conf", "d", "8");
+  calls = 0;
+  assert.equal((await session.commit()).outcome, "committed");
+  assert.equal(calls, 2);
+  assert.equal(await read(memory, "/a.conf"), A9);
+  session.close();
+});
+
 test("FR-012: a host write that throws mid-commit rejects the call; the source already written leaves the index and stays on disk (no undo on a throw)", async () => {
   const memory = createMemoryHost({ "/a.conf": A, "/b.conf": B });
   const { host, writes } = wrapped(memory, {

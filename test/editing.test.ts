@@ -557,7 +557,7 @@ test("a throw while committing rejects the call and leaves the index and the dis
 
 // Round 2: a disk write cannot be rolled back, so a commit's writes are kept after a throw (it used to
 // restore the edits of a file that was already written).
-test("a handler that throws on the written text rejects the commit, and the file stays committed", async () => {
+test("a handler that throws on the new text rejects the commit with nothing written, before or after it", async () => {
   const throwing: Handler = {
     claims: location => location.endsWith(".conf"),
     analyze(source) {
@@ -575,16 +575,17 @@ test("a handler that throws on the written text rejects the commit, and the file
   await session.stage("/w.conf", { op: "set", path: "b", value: "BOOM" });
   await session.stage("/u.conf", { op: "set", path: "a", value: "3" }); // after the throwing one: never reached
   await assert.rejects(session.commit(), /handler broke/);
-  assert.equal(await read(memory, "/v.conf"), "a=2\n");
-  assert.equal(await read(memory, "/w.conf"), "a=1\nb=BOOM\n");
+  // atomic-commit FR-012, ruled: the new text is analysed in prepare, so the throw comes before any write.
+  assert.deepEqual(writes, []);
+  assert.equal(await read(memory, "/v.conf"), "a=1\n");
+  assert.equal(await read(memory, "/w.conf"), W);
   assert.equal(await read(memory, "/u.conf"), "a=1\n");
-  // The written sources' edits are out of the index; the one never reached is still staged.
-  assert.deepEqual(session.index().map(e => [e.path, e.value]), [["a", "3"]]);
-  // A second commit writes only that one, and nothing is reported as overridden.
-  writes.length = 0;
+  assert.deepEqual(session.index().map(e => [e.path, e.value]), [["a", "2"], ["b", "BOOM"], ["a", "3"]]);
+  // Without the throwing edit, a second commit writes the other two.
+  await session.unstage("/w.conf");
   const report = await session.commit();
-  assert.deepEqual(writes, [["/u.conf", "a=3\n"]]);
-  assert.deepEqual(report.sources.map(r => [r.location, r.outcome, r.edits.map(e => e.outcome)]), [["/u.conf", "written", ["written"]]]);
+  assert.deepEqual(writes, [["/v.conf", "a=2\n"], ["/u.conf", "a=3\n"]]);
+  assert.deepEqual(report.sources.map(r => [r.location, r.outcome]), [["/v.conf", "written"], ["/u.conf", "written"]]);
   session.close();
 });
 
