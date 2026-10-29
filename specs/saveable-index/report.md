@@ -8,8 +8,8 @@ Tests 269 before, 287 after (18 new, all in `test/saveable-index.test.ts`; no ex
 - ec0c772 `feat(saveable-index): session.save() returns the index as plain data` (Part A)
 - 69dd5c6 `feat(saveable-index): session.restore() stages a save again against its base, then rebases` (Part B)
 - 4837507 `test(saveable-index): a restore keeps its own copy of the saved bytes`
-- the shift-guard test commit, `test(saveable-index): the shift guard across a restore`
-- this report
+- 9a55ba0 `test(saveable-index): the shift guard across a restore`
+- 8af104f `docs(saveable-index): the round's report` (and the one after it, which corrects item 2 below)
 
 **Tests first was not witnessed red.** The new API does not exist before the code, so a test file against it fails to compile (`tsc`) and cannot run; I wrote each Part's tests, then the types and code, and the first run of each was green. The tests' expected values are derived by hand (the byte ranges of `x: 1⏎y: 2⏎` and of `walls.yaml` are counted in the file's header comment, the insert cases reuse insert-delete's counted fixtures). The sabotage table below is what stands in for "red first".
 
@@ -57,7 +57,7 @@ Equivalent mutant found, not a gap: preferring `against.bytes` over the staging'
 ## Ambiguities, invented details, and things the spec got wrong (unsoftened)
 
 1. **The shape of `RestoreReport` is mine.** The spec says "one entry per saved source: `restored` or `refused` with a reason, and per edit `restored` or `refused`", and nothing for a save refused whole. I added a report-level `outcome: "restored" | "refused"` and `reason` (used only for an unknown format, with `sources: []`). A report with every source refused is still `outcome: "restored"`. Per-edit entries carry `reason` only when refused.
-2. **A refused whole save resolves, it does not throw.** "Refused whole" could be a rejection. I followed `stage`'s convention (refusals resolve; a writer bug throws). The check runs before `serialize`, so it is not queued behind other work and answers even on a closed session; a closed session with a valid `format` resolves `refused` with `the session is closed`... only as the initial value of the result, because `serialize` skips closed work: the report says `outcome: "refused"`, `reason: "the session is closed"`, untested.
+2. **A refused whole save resolves, it does not throw.** "Refused whole" could be a rejection. I followed `stage`'s convention (refusals resolve; a writer bug throws). The format check runs before `serialize`, so it is not queued behind other work and answers even on a closed session. A closed session with a valid `format` resolves `outcome: "refused"`, `reason: "the session is closed"` (the result's initial value, since `serialize` skips closed work); that is untested.
 3. **A source none of whose edits could be restored is `refused`** (`none of its edits could be restored`), though FR-006's list of refusals does not name it, and FR-007 says only that the other edits are restored. The smallest reading that keeps "restored" meaning "something is staged". Its per-edit entries are listed.
 4. **Every `reason` string is mine**, pinned by the tests: `the saved bytes do not hash to the saved base version`; `<location> already has staged edits`; `none of its edits could be restored`; `a set needs a value`; `the saved index has format N, and only format 1 is known`. The graph / external / unreadable / no-writer reasons are `stage`'s, unchanged.
 5. **The order of the source-level checks** is graph/writer, then already staged, then hash. The spec lists them in another order ("not a source, not claimed, already staged, hash"), which this matches, but a source that fails two (say tampered *and* staged) reports only the first.
