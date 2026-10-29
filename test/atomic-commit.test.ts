@@ -411,6 +411,34 @@ test("FR-012: a host write that throws mid-commit rejects the call; the source a
   session.close();
 });
 
+test("FR-012: a throw while putting back rejects the call; a source already put back keeps its edits, one not yet put back leaves the index", async () => {
+  const memory = createMemoryHost({ "/a.conf": A, "/b.conf": B, "/c.conf": C });
+  let undoing = false;
+  const { host, writes } = wrapped(memory, {
+    quiet: true,
+    onWrite: location => {
+      if (location !== "/c.conf") return undefined;
+      undoing = true;
+      return { ok: false, reason: "disk full" };
+    },
+    onRead: location => {
+      if (undoing && location === "/a.conf") throw new Error("host broke");
+      return undefined;
+    },
+  });
+  const session = await twoOn(host, memory, ["/a.conf", "/b.conf", "/c.conf"]);
+  await set(session, "/a.conf", "a", "9");
+  await set(session, "/b.conf", "d", "8");
+  await set(session, "/c.conf", "e", "2");
+  await assert.rejects(session.commit(), /host broke/);
+  // newest first: b was put back, then reading a threw
+  assert.deepEqual(writes, [["/a.conf", A9], ["/b.conf", B8], ["/c.conf", C2], ["/b.conf", B]]);
+  assert.equal(await read(memory, "/b.conf"), B);
+  assert.equal(await read(memory, "/a.conf"), A9);
+  assert.deepEqual(session.index().map(e => e.path), ["d", "e"]);
+  session.close();
+});
+
 // Case 11: the Node host -------------------------------------------------------------------------
 
 test("case 11: on a real disk, b's directory refuses a new file: a's bytes and mode are as before the commit", async t => {
