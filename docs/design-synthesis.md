@@ -250,7 +250,7 @@ The ProseMirror editor comes later. Whether an editor document is a source whose
 
 - [ ] **Disk encoding.** Offsets are UTF-16 in memory, files are bytes on disk. Decide how a byte-order mark and non-UTF-8 files round-trip; the identity test must hold across decode and re-encode.
 - [ ] **Edits in opaque segments.** Refuse in v1, or let the host handler re-escape the new text (entities in an HTML attribute)?
-- [ ] **Multi-file atomicity.** Best-effort renames with rollback, or a small journal? Or is the VCS the real safety net and best effort enough?
+- [x] **Multi-file atomicity.** Best-effort renames with rollback, or a small journal? Or is the VCS the real safety net and best effort enough? *Settled 2026-10-29 (`specs/atomic-commit/`): rollback, all or none; the journal parked; a VCS commit, where there is one, follows a commit that landed.*
 - [ ] **Stamp granularity.** Block-level stamps serve most needs; decide whether run-level stamps are needed for inline amendments.
 - [ ] **Observer fidelity.** Verify against real traces what the DevTools Protocol reports as initiator for CSS-triggered loads, and which fetches a service worker misses (memory-cache reuse).
 - [ ] **Scripts.** Out of scope for v1; decide whether a script handler ever joins, or scripts stay observed-only.

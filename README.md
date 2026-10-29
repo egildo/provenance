@@ -109,7 +109,9 @@ the edit lands in exactly the bytes of that value, every other byte untouched, a
 file changing on disk in the meantime ([the design](docs/write-back.md),
 [the editing spec](specs/editing/spec.md)). Writing is granted, never ambient. Since 0.6.0 it
 also inserts and deletes entries ([insert-delete](specs/insert-delete/spec.md)), and an edit staged on a file that a
-colleague is mid-way through saving waits for it to parse again. Format plug-ins come from outside —
+colleague is mid-way through saving waits for it to parse again. Since 0.7.0 a commit lands every file or
+none ([atomic-commit](specs/atomic-commit/spec.md)), and the staged edits can be saved and restored across a
+reload ([saveable-index](specs/saveable-index/spec.md)). Format plug-ins come from outside —
 Cascata's YAML and JSON writers are the first.
 
 What's next: **stamps** (outputs that carry their source address, so an edit on a rendered page

@@ -92,8 +92,9 @@ that can disagree about where its bytes are.
    - the new version does not open (a file saved mid-typing) → the edits **wait** against their base, the
      session is told with the writer's words, a commit of that source is refused, and the next version
      that opens is rebased onto as usual (`specs/insert-delete/fixes.md`, the owner's ruling).
-4. **Commit.** Each source's preview is written if the disk still holds its base; if not, step 3
-   runs first. Afterwards the written bytes are the new base and the index empties for that source.
+4. **Commit.** Every source is checked, and rebased if the disk no longer holds its base (step 3), and its
+   preview is built and read, before any is written. Then every preview is written, or none is (below).
+   Afterwards the written bytes are the new base and the index empties.
 
 ## The laws
 
@@ -215,12 +216,37 @@ delete, loudly (the owner's ruling). A conflict caused by the writer's refusal c
 Two inserts at one spot are spliced in staging order; two into one empty container overlap (the writer
 rewrites the `{}` for each) and the second is refused — stage the container whole.
 
+## Saving several files at once (2026-10-29, `specs/atomic-commit/`)
+
+A commit is the unit: it lands every staged source, or none. A refusal, a failure or a dropped edit on any
+source, found while preparing, stops it with nothing written; an override does not, since both halves of
+a move land. A write that fails puts back the files already written, newest first, after checking each
+still holds what the commit wrote: a colleague's save since is left alone, and reported `unrestored`.
+LSP's `WorkspaceEdit` calls this failure handling `undo`. With a version-control commit after it (the
+BelType studio's isomorphic-git), Provenance's commit writes the working copy and the consumer records it
+only on `committed`.
+
+## Saving the index (2026-10-29, `specs/saveable-index/`)
+
+The index survives a reload as data the embedder stores (`session.save()`, `session.restore()`). The save
+carries each source's base bytes, the one thing the disk can no longer supply once it has moved. A restore
+stages each edit again against that base through the writer, never trusting saved byte ranges, then rebases
+onto the version the session holds, so a colleague's change made meanwhile is reported as any rebase
+reports it. git keeps its index in a file for the same reason.
+
 ## Parked, with what brings each back
 
 - **Where an edit to an inherited value lands** — into the layer that won (as DevTools edits the
   winning CSS rule) or a new override nearer the user. Back when a consumer needs to edit a default.
-- **Saving several files at once** — atomic per file (write a temporary file, rename), with a story
-  for stopping halfway across files. Back when one edit spans two files.
+- **A journal for a commit the process does not survive** — Mercurial's transaction journal. Back when a
+  half-written working copy is seen after a crash.
+- **A host verb that writes only if the file is unchanged** — closing the window between a check and a
+  write, in a commit's writes and its put-back. Back when a colleague is overwritten in that window.
+- **Groups, and committing some of one file's edits** — rebasing the rest onto the version just written.
+  Back soon: the studio's editor history events are the groups.
+- **A per-commit mode that lets the other files land.** Back when a consumer asks.
+- **A version's bytes asked of the host** — git holds every committed version — instead of carried in a
+  saved index. Back when a save's size matters.
 - **Inverses of computed values** — the tool's, but a helper may emerge once two tools have written
   one.
 - **A precision rule for numbers** — likely declared by the schema. Back with the first geometry
