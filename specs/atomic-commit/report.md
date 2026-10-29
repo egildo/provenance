@@ -8,7 +8,7 @@ Tests 243 before, 262 after (19 new, all in test/atomic-commit.test.ts; none rem
 - 8f0585f `feat(atomic-commit): a commit lands every staged source, or none` (src, the new test file, the edited existing tests)
 - 351cd32 `test(atomic-commit): a throw while putting back keeps the put-back sources staged`
 
-Tests were written first and run red (17 of the 18 failing; the one that passed was case 11, which returned early at that point). Code followed. One implementation commit rather than per Part: the new report type makes the old and new tests incompatible in `tsc`, so no smaller step is green.
+Tests were written first and run red (17 of the 18 then written failing on the old code; I did not record which one passed, and the claim it should have been red is not witnessed). Code followed. One implementation commit rather than per Part: the new report type makes the old and new tests incompatible in `tsc`, so no smaller step is green.
 
 ## What was built, per FR
 
