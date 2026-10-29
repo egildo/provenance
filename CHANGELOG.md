@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.0 — 2026-10-29
+
+**Atomic commit and the saveable index** ([atomic-commit](specs/atomic-commit/spec.md), [saveable-index](specs/saveable-index/spec.md), [design](docs/write-back.md)), for the BelType studio: a document made of includes, edited as one, its edits kept across reloads and committed together ([Codeberg issue](https://codeberg.org/egildo/provenance/issues/1)).
+
+- **A commit lands every staged file, or none.** Every source is checked, rebased and its new text analysed before any is written. A refused source, a failed read, a dropped edit, or a handler that throws on the new text stops the commit with nothing on disk; an override does not. A write that fails puts back the files already written, newest first, after checking each still holds what the commit wrote (a colleague's save since is left alone). LSP's `WorkspaceEdit` calls this `undo`.
+- **The report says which.** `CommitReport.outcome` is `committed` or `aborted`. A source's outcome gains `aborted` (another source stopped the commit; `reason` names it; its edits stay staged) and `unrestored` (written, and could not be put back). `conflicted` now means at least one edit was dropped, and lists the dropped ones.
+- **`session.save()` and `session.restore(saved)`.** The index as plain data that survives the structured clone (IndexedDB, `postMessage`): per source its base version, base bytes and edits, no byte ranges. A restore stages each edit again against the saved base through the writer, then rebases onto the version the session holds, so a change made on disk meanwhile is reported as any rebase reports it. A source that already has staged edits is refused, never merged.
+
+Breaking: `CommitReport.outcome` is new and required; `SourceCommit.outcome` gains `aborted` and `unrestored`, so an exhaustive `switch` stops compiling; a commit with one bad source now writes nothing where it wrote the others; a handler that throws on the new text now leaves every file unwritten; `Session` gains `save` and `restore`.
+
 ## 0.6.2 — 2026-10-26
 
 - **Provenance moves to the public npm registry.** It was published to GitHub Packages, which asks for a token even to read. `@egildo/provenance` is now on npmjs.org, its repository is Codeberg, and a workflow publishes a release tag from the GitHub mirror, by npm trusted publishing. The code is unchanged.
