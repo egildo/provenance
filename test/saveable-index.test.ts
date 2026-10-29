@@ -440,3 +440,23 @@ test("FR-008: the notices of a rebase are announced after the restore is kept: a
   assert.deepEqual(second.index().map(e => [e.start, e.end]), [[7, 8]]);
   second.close();
 });
+
+test("FR-006: the restored session keeps its own copy of the saved bytes: writing into the save afterwards changes nothing", async () => {
+  const memory = createMemoryHost({ "/g/a.yaml": A });
+  const first = await openOn(memory, "/g/a.yaml");
+  await first.stage("/g/a.yaml", { op: "set", path: "/x", value: 7 });
+  memory.write("/g/a.yaml", "x: 5\ny: 2\n");
+  await absorbed(first, "/g/a.yaml");
+  const saved = first.save();
+  first.close();
+  const second = await openOn(memory, "/g/a.yaml");
+  await second.restore(saved);
+  const [entry] = saved.sources;
+  assert.ok(entry);
+  entry.bytes.fill(0x7a);
+  entry.edits[0]?.disk?.fill(0x7a);
+  assert.equal(await previewText(second, "/g/a.yaml"), "x: 7\ny: 2\n");
+  assert.deepEqual(second.index().map(e => e.disk), [bytes("5")]);
+  assert.deepEqual(second.save().sources[0]?.bytes, bytes("x: 5\ny: 2\n"));
+  second.close();
+});
