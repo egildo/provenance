@@ -957,6 +957,21 @@ export async function openSession(options: {
           }),
         ),
       ),
+    save: () => ({
+      format: 1,
+      sources: [...staged].map(([key, staging]) => ({
+        location: key,
+        base: staging.version,
+        bytes: staging.base.slice(),
+        edits: staging.edits.map(e => ({
+          op: e.op,
+          path: e.path,
+          ...(e.value === undefined ? {} : { value: e.value }),
+          status: e.status,
+          ...(e.disk === undefined ? {} : { disk: e.disk.slice() }),
+        })),
+      })),
+    }),
     unstage: (location, path) =>
       serialize(async () => {
         const key = await keyFor(location);

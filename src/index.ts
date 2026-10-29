@@ -25,6 +25,12 @@ export interface Session {
   index(): readonly StagedEdit[];
   /** Drops the staged edit at `path`, or every staged edit of the source. */
   unstage(location: string, path?: string): Promise<void>;
+  /**
+   * The index as plain data (specs/saveable-index/spec.md): per staged source its location, base version and base
+   * bytes, and each edit's operation, path, value and status, in staging order. It survives a structured clone.
+   * Writing it anywhere is the embedder's.
+   */
+  save(): SavedIndex;
   /** The source's base with every staged edit spliced in, or `undefined` when none is staged. */
   preview(id: string): Promise<Preview | undefined>;
   /**
@@ -113,6 +119,29 @@ export interface StagedEdit {
   readonly disk?: Uint8Array;
   /** Present while the source's newest version does not open: the writer's words. The edit waits against its base (FIX-001). */
   readonly waiting?: string;
+}
+
+/** What `session.save()` returns: the index as plain data, `Uint8Array` and `Map` the only objects in it. */
+export interface SavedIndex {
+  /** Which shape this is; `restore` refuses a number it does not know. */
+  readonly format: 1;
+  readonly sources: readonly {
+    /** The canonical location the session staged under. */
+    readonly location: string;
+    /** The base version the edits were staged against, and the bytes that hash to it. */
+    readonly base: string;
+    readonly bytes: Uint8Array;
+    readonly edits: readonly SavedEdit[];
+  }[];
+}
+
+/** One saved edit: the semantic half only. Byte ranges are made again by the writer on restore. */
+export interface SavedEdit {
+  readonly op: EditOperation["op"];
+  readonly path: string;
+  readonly value?: EditData;
+  readonly status: "staged" | "overrides";
+  readonly disk?: Uint8Array;
 }
 
 /** A source's base plus its staged edits, with the content hash that names it as a version. */
