@@ -4,8 +4,8 @@
 
 **Created**: 2026-10-29
 
-**Status**: Shape ruled by the owner, 2026-10-29; rulings 5 and 6 are the coordinator's defaults, to be
-confirmed (implementer: Sonnet)
+**Status**: Ruled by the owner, 2026-10-29; rulings 5 and 6 proposed by the coordinator and confirmed by the
+owner the same day (implementer: Sonnet)
 
 **Input**: The Codeberg issue "A commit atomic across files, for a document made of includes", from the
 BelType studio. A paragraph moved between two chapters is one edit to the user and two files to
@@ -32,9 +32,9 @@ after a crash, `hg recover`) is the named upgrade, parked.
    on *a set of staged sources*, not on "the whole index"; this round always passes the whole index. The
    hard part groups bring — committing some of one file's edits and rebasing the rest onto the version the
    session wrote — is the next round's, not this one's.
-5. **Always, not a mode** *(coordinator's default)*. A commit always aborts on ruling 2; there is no
+5. **Always, not a mode** *(confirmed)*. A commit always aborts on ruling 2; there is no
    per-commit option. The issue allows either; a mode can be added later without breaking anyone.
-6. **Putting a file back checks first** *(coordinator's default)*. Before writing a file's old bytes back,
+6. **Putting a file back checks first** *(confirmed)*. Before writing a file's old bytes back,
    the session reads the disk: if it no longer holds the version this commit wrote (a colleague saved
    since), the file is left alone and reported. Putting back must never overwrite a colleague.
 
