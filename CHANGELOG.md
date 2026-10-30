@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.1 — 2026-10-30
+
+- **The write sandbox is judged at commit, not at load** ([Codeberg issue](https://codeberg.org/egildo/provenance/issues/2)). A directory swapped for a symbolic link after a source was loaded no longer lets a commit, or the put-back after a failed write, land outside the writable roots: both check the location again and refuse, naming the link. The Node host also refuses a write whose path holds a link. A small window between that check and the rename remains, because Node cannot write relative to an open directory.
+
+No breaking changes.
+
 ## 0.7.0 — 2026-10-29
 
 **Atomic commit and the saveable index** ([atomic-commit](specs/atomic-commit/spec.md), [saveable-index](specs/saveable-index/spec.md), [design](docs/write-back.md)), for the BelType studio: a document made of includes, edited as one, its edits kept across reloads and committed together ([Codeberg issue](https://codeberg.org/egildo/provenance/issues/1)).
