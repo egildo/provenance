@@ -284,3 +284,69 @@ test("fix 4: a writable root spelled in another letter case than the disk still 
     await fs.rm(dir, { recursive: true });
   }
 });
+
+// 4. The write sandbox is judged at commit, not at load (issue 2) --------------------------------
+
+/** allowed/data/a.yaml and outside/a.yaml, both `x: 1`, under a canonical temporary directory. */
+async function sandboxDisk() {
+  const base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "provenance-sandbox-")));
+  for (const dir of ["allowed/data", "outside"]) {
+    await fs.mkdir(path.join(base, dir), { recursive: true });
+    await fs.writeFile(path.join(base, dir, "a.yaml"), "x: 1\n");
+  }
+  return base;
+}
+const swapForLink = async (base: string) => {
+  await fs.rename(path.join(base, "allowed/data"), path.join(base, "allowed/data-old"));
+  await fs.symlink(path.join(base, "outside"), path.join(base, "allowed/data"));
+};
+
+test("issue 2: a directory swapped for a link after staging: the commit refuses and nothing outside changes", async () => {
+  const base = await sandboxDisk();
+  const entry = path.join(base, "allowed/data/a.yaml");
+  const session = await openSession({ host: createNodeHost({ debounce: 50 }), entry, handlers: [], writers: [yamlWriter()], writable: [path.join(base, "allowed")] });
+  try {
+    assert.deepEqual(await session.stage(entry, { op: "set", path: "/x", value: 2 }), { ok: true });
+    await swapForLink(base);
+    const report = await session.commit();
+    assert.equal(report.outcome, "aborted");
+    assert.deepEqual(report.sources.map(s => s.outcome), ["refused"]);
+    assert.match(report.sources[0]?.reason ?? "", /link/);
+    assert.equal(await fs.readFile(path.join(base, "outside/a.yaml"), "utf8"), "x: 1\n");
+    assert.equal(await fs.readFile(path.join(base, "allowed/data-old/a.yaml"), "utf8"), "x: 1\n");
+  } finally {
+    session.close();
+  }
+});
+
+test("issue 2: the Node host itself refuses a write through a link", async () => {
+  const base = await sandboxDisk();
+  await swapForLink(base);
+  const result = await createNodeHost().write?.(path.join(base, "allowed/data/a.yaml"), bytes("x: 2\n"));
+  assert.equal(result?.ok, false);
+  assert.equal(await fs.readFile(path.join(base, "outside/a.yaml"), "utf8"), "x: 1\n");
+});
+
+test("issue 2: a directory swapped for a link before a put-back: the put-back is refused, reported unrestored, nothing outside changes", async () => {
+  const base = await sandboxDisk();
+  const first = path.join(base, "allowed/data/a.yaml");
+  const second = path.join(base, "allowed/b.yaml");
+  await fs.writeFile(second, "y: 1\n");
+  const node = createNodeHost({ debounce: 50 });
+  // b's write fails, and just before it the directory holding a is swapped for a link to outside.
+  const host: Host = { ...node, write: async (location, data) => (location === second ? (await swapForLink(base), { ok: false as const, reason: "disk full" }) : node.write!(location, data)) };
+  const session = await openSession({ host, entry: first, handlers: [], writers: [yamlWriter()], writable: [path.join(base, "allowed")] });
+  try {
+    await session.addRoot(second);
+    assert.deepEqual(await session.stage(first, { op: "set", path: "/x", value: 2 }), { ok: true });
+    assert.deepEqual(await session.stage(second, { op: "set", path: "/y", value: 2 }), { ok: true });
+    const report = await session.commit();
+    assert.deepEqual(report.sources.map(s => s.outcome), ["unrestored", "failed"]);
+    assert.match(report.sources[0]?.reason ?? "", /back refused/);
+    // a was written before the swap; the put-back would have followed the link and rewritten outside.
+    assert.equal(await fs.readFile(path.join(base, "allowed/data-old/a.yaml"), "utf8"), "x: 2\n");
+    assert.equal(await fs.readFile(path.join(base, "outside/a.yaml"), "utf8"), "x: 1\n");
+  } finally {
+    session.close();
+  }
+});

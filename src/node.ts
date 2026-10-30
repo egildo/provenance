@@ -8,6 +8,18 @@ import type { Host } from "./index.ts";
 
 let counter = 0;
 
+/** The first symbolic link on the path to `location`, walking from the root down, or undefined. */
+async function linkOn(location: string): Promise<string | undefined> {
+  const { root } = path.parse(location);
+  let current = root;
+  for (const segment of path.relative(root, location).split(path.sep)) {
+    current = path.join(current, segment);
+    const stat = await fs.lstat(current).catch(() => undefined);
+    if (stat?.isSymbolicLink()) return current;
+  }
+  return undefined;
+}
+
 export function createNodeHost({ debounce = 300 }: { debounce?: number } = {}): Host {
   return {
     paths: {
@@ -28,6 +40,10 @@ export function createNodeHost({ debounce = 300 }: { debounce?: number } = {}): 
 
     /** Atomic per file: a temporary file in the same directory, then a rename over the target. */
     async write(location, bytes) {
+      // The session hands over canonical locations, so a link anywhere on the path means it changed since the load.
+      // ponytail: lstat-then-rename leaves a window between the check and the rename; closing it needs openat, which Node lacks.
+      const linked = await linkOn(location);
+      if (linked !== undefined) return { ok: false, reason: `${linked} is a symbolic link; a write does not follow links` };
       const temporary = path.join(path.dirname(location), `.${path.basename(location)}.${process.pid}.${(counter += 1)}.tmp`);
       try {
         const mode = await fs.stat(location).then(stat => stat.mode, () => undefined);

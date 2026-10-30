@@ -846,6 +846,17 @@ export async function openSession(options: {
     return false;
   }
 
+  /**
+   * Why a write to this key must be refused now, if it must: the location is judged again, not as loaded. A directory
+   * swapped for a link makes the canonical location differ from the key (the file moved under the session).
+   */
+  async function barred(key: string): Promise<string | undefined> {
+    const now = (await host.canonicalize(key)) ?? key;
+    if (now !== key) return `${key} now resolves to ${now}: a link replaced part of its path since it was loaded`;
+    if (!(await isWritable(key))) return `${key} is outside every writable root`;
+    return undefined;
+  }
+
   /** A source ready to write: its bytes, the disk's bytes to put back, and what its edits will be reported as. */
   interface Ready {
     readonly key: string;
@@ -864,7 +875,8 @@ export async function openSession(options: {
   async function prepare(key: string, staging: Staging): Promise<Ready | { readonly cause: SourceCommit }> {
     const source = idFor(key);
     const nothing = (outcome: "refused" | "failed", reason: string) => ({ cause: { source, location: key, outcome, reason, edits: [] } as SourceCommit });
-    if (!(await isWritable(key))) return nothing("refused", `${key} is outside every writable root`);
+    const barredWhy = await barred(key);
+    if (barredWhy !== undefined) return nothing("refused", barredWhy);
     if (host.write === undefined) return nothing("refused", "the host cannot write");
     const read = await host.read(key);
     if (!read.ok) return nothing("failed", read.reason);
@@ -928,8 +940,9 @@ export async function openSession(options: {
     if (failed) {
       for (const p of wrote.reverse()) {
         const was = await host.read(p.key);
-        let why: string | undefined;
-        if (!was.ok) why = `putting ${p.key} back failed: could not read it: ${was.reason}`;
+        let why: string | undefined = await barred(p.key);
+        if (why !== undefined) why = `putting ${p.key} back refused: ${why}`;
+        else if (!was.ok) why = `putting ${p.key} back failed: could not read it: ${was.reason}`;
         else if ((await sha256(was.bytes)) !== p.version) why = `${p.key} was saved by someone else after this commit wrote it; left as it is`;
         else {
           // ponytail: a colleague can still save between the read above and this write; closing it needs a host verb that writes only if unchanged (parked).
