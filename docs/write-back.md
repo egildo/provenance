@@ -192,6 +192,7 @@ case was written down.
 | Edits keyed by path | Two staged edits at one path; an edit against another edit's result |
 | One plug-in per format | Two parsers reporting positions in the same format |
 | Nothing silent | An override, a drop, or a refusal without a notice |
+| Writes stay inside the granted roots | A write outside every writable root, or through a symbolic link |
 
 ## Inserting and deleting (2026-10-12, `specs/insert-delete/`)
 
@@ -234,6 +235,17 @@ stages each edit again against that base through the writer, never trusting save
 onto the version the session holds, so a colleague's change made meanwhile is reported as any rebase
 reports it. git keeps its index in a file for the same reason.
 
+## The write sandbox (2026-10-30, v0.7.1)
+
+A commit writes only inside the roots the embedder granted. The location is judged at commit, not as
+loaded: before each write and each put-back the session resolves the key again, and refuses when it now
+resolves elsewhere (a link replaced part of its path) or lies outside every root. The Node host also walks
+the path and refuses a write through any symbolic link. The refusal is reported `refused`, its reason
+naming the link.
+
+One window stays open: between the host's check and its rename, a directory can still be swapped for a
+link. Closing it needs writes relative to an open directory (`openat`), which Node does not offer.
+
 ## Parked, with what brings each back
 
 - **Where an edit to an inherited value lands** — into the layer that won (as DevTools edits the
@@ -251,8 +263,6 @@ reports it. git keeps its index in a file for the same reason.
   one.
 - **A precision rule for numbers** — likely declared by the schema. Back with the first geometry
   consumer.
-- **A sandbox for writes** — write only inside granted roots; never to a remote or pinned
-  document. Back before the first release that writes, not after.
 
 ## The first build
 
