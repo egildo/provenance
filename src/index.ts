@@ -24,7 +24,7 @@ export interface Session {
   /** The staged edits, source by source, each against its source's base version. */
   index(): readonly StagedEdit[];
   /** Drops the staged edit at `path`, or every staged edit of the source. */
-  unstage(location: string, path?: string): Promise<void>;
+  unstage(location: string, path?: string, region?: string): Promise<void>;
   /**
    * The index as plain data (specs/saveable-index/spec.md): per staged source its location, base version and base
    * bytes, and each edit's operation, path, value and status, in staging order. It survives a structured clone.
@@ -72,6 +72,8 @@ export interface SourceCommit {
   /** What became of each edit that was written or dropped; empty when refused or failed. */
   readonly edits: readonly {
     readonly path: string;
+    /** The region of the source the edit is in, where it is not in the source itself. */
+    readonly region?: string;
     /** `overrode`: the value on disk had changed, and the edit replaced it. */
     readonly outcome: "written" | "overrode" | "conflicted";
     /** Why an edit was dropped; present exactly when `outcome` is `conflicted`. */
@@ -102,8 +104,8 @@ export type ConflictReason = "gone" | "overlap" | "unwritable" | "exists" | "cha
 
 /** What `stage` is asked to do, JSON Patch's operation object with Cascata's verb names. */
 export type EditOperation =
-  | { readonly op: "set" | "add"; readonly path: string; readonly value: EditData }
-  | { readonly op: "remove"; readonly path: string };
+  | { readonly op: "set" | "add"; readonly path: string; readonly value: EditData; readonly region?: string }
+  | { readonly op: "remove"; readonly path: string; readonly region?: string };
 
 export type StageResult = { readonly ok: true } | { readonly ok: false; readonly reason: string };
 
@@ -111,6 +113,8 @@ export type StageResult = { readonly ok: true } | { readonly ok: false; readonly
 export interface StagedEdit {
   readonly source: string;
   readonly path: string;
+  /** The region of the source the edit is in, where it is not in the source itself. */
+  readonly region?: string;
   /** What the edit does at `path`. */
   readonly op: EditOperation["op"];
   /** The value as staged (a `Map` stays a `Map`); present for `set` and `add`, absent for `remove`. */
@@ -130,7 +134,7 @@ export interface StagedEdit {
 /** What `session.save()` returns: the index as plain data, `Uint8Array` and `Map` the only objects in it. */
 export interface SavedIndex {
   /** Which shape this is; `restore` refuses a number it does not know. */
-  readonly format: 1;
+  readonly format: 1 | 2;
   readonly sources: readonly {
     /** The canonical location the session staged under. */
     readonly location: string;
@@ -145,6 +149,8 @@ export interface SavedIndex {
 export interface SavedEdit {
   readonly op: EditOperation["op"];
   readonly path: string;
+  /** The region of the source the edit is in, where it is not in the source itself. */
+  readonly region?: string;
   readonly value?: EditData;
   readonly status: "staged" | "overrides";
   readonly disk?: Uint8Array;
@@ -170,6 +176,8 @@ export interface SourceRestore {
   /** Per saved edit, in saved order; empty when the source was refused before its edits were tried. */
   readonly edits: readonly {
     readonly path: string;
+    /** The region of the source the edit is in, where it is not in the source itself. */
+    readonly region?: string;
     readonly outcome: "restored" | "refused";
     /** The writer's or the stage's words, as `StageResult` carries them. */
     readonly reason?: string;
@@ -242,6 +250,8 @@ export interface Change {
 export interface EditNotice {
   readonly source: string;
   readonly path: string;
+  /** The region of the source the edit is in, where it is not in the source itself. */
+  readonly region?: string;
   readonly outcome: "moved" | "overrides" | "conflicted" | "respelled" | "waiting";
   /** Why the edit was dropped; present exactly when `outcome` is `conflicted`. */
   readonly reason?: ConflictReason;
@@ -273,6 +283,18 @@ export interface Findings {
     readonly kind: "requires" | "candidate";
   }[];
   readonly base?: string;
+  /**
+   * Text in another language inside this source (regions-for-writing): its edits go through the writer the session's
+   * `regionWriters` names for `language`, and `path` is that writer's own. String indices like `requests`.
+   * `opaque`: the enclosing text escapes it, so edits there are refused.
+   */
+  readonly regions?: readonly {
+    readonly name: string;
+    readonly start: number;
+    readonly end: number;
+    readonly language: string;
+    readonly opaque?: boolean;
+  }[];
 }
 
 export type Resolution =

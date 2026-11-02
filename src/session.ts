@@ -81,6 +81,23 @@ interface Staging {
 const EXISTS_CODE = "edit-target-exists";
 const GONE_CODES: ReadonlySet<string> = new Set(["edit-target-absent", "edit-parent-scalar"]);
 
+/**
+ * A region's edit is held in the source's own staging with its path joined to the region's name, so every comparison of
+ * paths, the overlap checks and the splice work unchanged; the public views split it again (`shown`).
+ */
+const NUL = "\u0000";
+const joinPath = (region: string | undefined, path: string) => (region === undefined ? path : `${NUL}${region}${NUL}${path}`);
+const splitPath = (joined: string): { readonly path: string; readonly region?: string } => {
+  if (!joined.startsWith(NUL)) return { path: joined };
+  const cut = joined.indexOf(NUL, 1);
+  return { region: joined.slice(1, cut), path: joined.slice(cut + 1) };
+};
+const shown = (joined: string): { readonly path: string; readonly region?: string } => splitPath(joined);
+const described = (joined: string) => {
+  const { path, region } = splitPath(joined);
+  return region === undefined ? path : `${path} in region ${region}`;
+};
+
 const sameBytes = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((byte, i) => byte === b[i]);
 
 /**
@@ -182,10 +199,12 @@ export async function openSession(options: {
   resolvers?: readonly Resolver[];
   /** The editing half of the format plug-ins; the first that claims a location is its writer. */
   writers?: readonly Writer[];
+  /** The writer for the text of each region language a handler reports (`Findings.regions`): `{ yaml: yamlWriter() }`. */
+  regionWriters?: Readonly<Record<string, Writer>>;
   /** Locations under which a commit may write. Absent means nothing is writable. */
   writable?: readonly string[];
 }): Promise<Session> {
-  const { host, handlers, resolvers = [], writers = [], writable = [] } = options;
+  const { host, handlers, resolvers = [], writers = [], regionWriters = {}, writable = [] } = options;
   if (typeof options.entry !== "string" || options.entry === "") throw new TypeError("entry must be a location");
 
   const ids = new Map<string, string>();
@@ -316,12 +335,101 @@ export async function openSession(options: {
     return findings;
   }
 
+  /** For a document made by `openDoc` over regions: the writer's own document, and a region's, opened on demand. */
+  const parts = new WeakMap<WriterDocument, { readonly inner: WriterDocument; region(name: string): RegionDoc }>();
+  type RegionDoc = { readonly ok: true; readonly doc: WriterDocument; readonly start: number } | { readonly ok: false; readonly reason: string; readonly code?: string };
+  const unwrap = (doc: WriterDocument) => parts.get(doc)?.inner ?? doc;
+
+  /**
+   * The writer's document for `bytes`, or, when the source's handler reports regions in this version, a document that
+   * also answers `joinPath(region, path)` through the region's writer, its answers moved by the region's start.
+   */
+  function openDoc(key: string, writer: Writer, bytes: Uint8Array, version: string): ReturnType<Writer["open"]> {
+    const opening = writer.open(bytes);
+    if (!opening.ok) return opening;
+    const handler = handlers.find(h => h.claims(key));
+    if (!handler) return opening;
+    let text: string;
+    try {
+      text = decoder.decode(bytes);
+    } catch {
+      return opening;
+    }
+    const found = findingsFor(handler, version, text).regions;
+    if (!found || found.length === 0) return opening;
+    const offsets = byteOffsets(text, found.flatMap(r => [r.start, r.end]));
+    const inner = opening.document;
+    const opened = new Map<string, RegionDoc>();
+    const region = (name: string): RegionDoc => {
+      const known = opened.get(name);
+      if (known) return known;
+      const k = found.findIndex(r => r.name === name);
+      let result: RegionDoc;
+      const r = found[k];
+      const regionWriter = r && regionWriters[r.language];
+      if (!r) result = { ok: false, reason: `no region named ${name}`, code: "edit-target-absent" };
+      else if (r.opaque) result = { ok: false, reason: `the region ${name} is opaque: the text around it escapes it, and an edit there is refused` };
+      else if (!regionWriter) result = { ok: false, reason: `no writer for the language ${r.language} of the region ${name}` };
+      else {
+        const start = offsets[2 * k] as number;
+        const inside = regionWriter.open(bytes.subarray(start, offsets[2 * k + 1]));
+        result = inside.ok ? { ok: true, doc: inside.document, start } : { ok: false, reason: `the region ${name} does not open: ${inside.reason}` };
+      }
+      opened.set(name, result);
+      return result;
+    };
+    const via = <T>(joined: string, plain: () => T, routed: (target: { doc: WriterDocument; start: number }, path: string) => T, refuse: (failed: { reason: string; code?: string }) => T): T => {
+      const split = splitPath(joined);
+      if (split.region === undefined) return plain();
+      const target = region(split.region);
+      return target.ok ? routed(target, split.path) : refuse(target);
+    };
+    const move = (result: WriterWriteResult, start: number): WriterWriteResult => (result.ok ? { ok: true, edit: { start: result.edit.start + start, end: result.edit.end + start, bytes: result.edit.bytes } } : result);
+    const cannot = (verb: string): { ok: false; reason: string } => ({ ok: false, reason: `its document has no ${verb}` });
+    const document: WriterDocument = {
+      locate: path => via(path, () => inner.locate(path), (t, p) => { const r = t.doc.locate(p); return r.ok ? { ok: true, start: r.start + t.start, end: r.end + t.start } : r; }, f => ({ ok: false, ...f })),
+      write: (path, value) => via(path, () => inner.write(path, value), (t, p) => move(t.doc.write(p, value), t.start), f => ({ ok: false, ...f })),
+      add: (path, value) => via(path, () => (inner.add ? inner.add(path, value) : cannot("add")), (t, p) => (t.doc.add ? move(t.doc.add(p, value), t.start) : cannot("add")), f => ({ ok: false, ...f })),
+      remove: path => via(path, () => (inner.remove ? inner.remove(path) : cannot("remove")), (t, p) => (t.doc.remove ? move(t.doc.remove(p), t.start) : cannot("remove")), f => ({ ok: false, ...f })),
+      inside: (path, within) => {
+        const a = splitPath(path);
+        const b = splitPath(within);
+        if (a.region !== b.region) return false;
+        if (a.region === undefined) return inner.inside?.(path, within) ?? false;
+        const target = region(a.region);
+        return target.ok && (target.doc.inside?.(a.path, b.path) ?? false);
+      },
+      amend: (stagedEdit, operation) => {
+        const a = splitPath(stagedEdit.path);
+        const b = splitPath(operation.path);
+        if (a.region !== b.region) return { inside: false };
+        if (a.region === undefined) return inner.amend ? inner.amend(stagedEdit, operation) : { inside: true, ok: false, reason: cannot("amend").reason };
+        const target = region(a.region);
+        if (!target.ok) return { inside: true, ok: false, reason: target.reason };
+        if (!target.doc.amend) return { inside: true, ok: false, reason: cannot("amend").reason };
+        return target.doc.amend({ path: a.path, value: stagedEdit.value }, { ...operation, path: b.path });
+      },
+      shifted: (path, newer) => {
+        const split = splitPath(path);
+        if (split.region === undefined) return inner.shifted?.(path, unwrap(newer)) ?? false;
+        const now = parts.get(newer)?.region(split.region);
+        const was = region(split.region);
+        return was.ok && now?.ok === true && (was.doc.shifted?.(split.path, now.doc) ?? false);
+      },
+    };
+    parts.set(document, { inner, region });
+    return { ok: true, document };
+  }
+
+  /** Whether the old document says a list along `path` changed length in the new one, whichever of them has regions. */
+  const shiftedIn = (was: WriterDocument, path: string, now: WriterDocument) => (parts.has(was) ? was.shifted?.(path, now) : was.shifted?.(path, unwrap(now))) ?? false;
+
   /** What rebases did to staged edits during the running piece of work, for the change it reports. */
   const notices: EditNotice[] = [];
   /** Sources the running commit has written. A disk write cannot be rolled back, so they stay committed. */
   const writtenKeys: string[] = [];
   const drained = (): { edits?: readonly EditNotice[] } => {
-    const edits = notices.splice(0);
+    const edits = notices.splice(0).map((n): EditNotice => ({ ...n, ...shown(n.path) }));
     return edits.length === 0 ? {} : { edits };
   };
 
@@ -338,7 +446,7 @@ export async function openSession(options: {
     const source = idFor(key);
     const kept: Staged[] = [];
     // One opening of the new version serves every edit; bytes that do not open leave none of them writable.
-    const opening = staging.writer.open(bytes);
+    const opening = openDoc(key, staging.writer, bytes, version);
     if (!opening.ok) {
       // A version that does not open (a file saved mid-typing) costs no staged edit: they wait against their base
       // until a version that opens arrives, and rebase onto that one (FIX-001, the owner's ruling).
@@ -350,7 +458,7 @@ export async function openSession(options: {
     const doc = opening.document;
     for (const e of staging.edits) {
       // The shift guard (FR-013) comes first: through a list that changed length, the path may name another item.
-      if (staging.doc.shifted?.(e.path, doc)) {
+      if (shiftedIn(staging.doc, e.path, doc)) {
         notices.push({ source, path: e.path, outcome: "conflicted", reason: "shifted" });
         continue;
       }
@@ -725,8 +833,10 @@ export async function openSession(options: {
    * Stages one edit. `against` is a restore's (saved-index FR-006): the base to stage a source's first edit against
    * in place of the one the session holds; a source already being staged keeps the base it has.
    */
-  async function stageEdit(location: string, operation: EditOperation, against?: { readonly version: string; readonly bytes: Uint8Array }): Promise<StageResult> {
-    const { path } = operation;
+  async function stageEdit(location: string, requested: EditOperation, against?: { readonly version: string; readonly bytes: Uint8Array }): Promise<StageResult> {
+    const path = joinPath(requested.region, requested.path);
+    // The operation as the staging holds it: a region's path is joined to its name.
+    const operation: EditOperation = requested.op === "remove" ? { op: "remove", path } : { op: requested.op, path, value: requested.value };
     const found = await stageable(location);
     if (!found.ok) return found;
     const { key, node, writer } = found;
@@ -737,10 +847,11 @@ export async function openSession(options: {
     if (!base) return { ok: false, reason: `${key} was not read` };
     let doc = staging?.doc;
     if (!doc) {
-      const opening = writer.open(base);
+      const opening = openDoc(key, writer, base, staging?.version ?? against?.version ?? ("version" in node ? node.version : ""));
       if (!opening.ok) return { ok: false, reason: opening.reason };
       doc = opening.document;
     }
+    if (requested.region !== undefined && !parts.has(doc)) return { ok: false, reason: `no region named ${requested.region}` };
     const others = staging?.edits ?? [];
     const same = others.find(e => e.path === path);
     const inside = doc.inside;
@@ -755,7 +866,7 @@ export async function openSession(options: {
       const { start, end, bytes } = again.edit;
       checkRange(base.length, start, end, "the writer");
       const clash = others.find(e => e !== edit && overlaps(e, again.edit));
-      if (clash) return { ok: false, reason: `the edit overlaps the staged edit at ${clash.path}` };
+      if (clash) return { ok: false, reason: `the edit overlaps the staged edit at ${described(clash.path)}` };
       if (staging) {
         staging.edits = staging.edits.map(e => (e === edit ? { ...edit, value, start, end, bytes } : e));
         staging.preview = undefined;
@@ -766,7 +877,7 @@ export async function openSession(options: {
     if (within) {
       // An edit inside a staged edit (FR-011): inside a delete it is refused; inside a set or an insert it
       // amends the staged value, which the writer then writes again, so the bytes stay the writer's.
-      if (within.op === "remove") return { ok: false, reason: `the entry at ${within.path} is staged for removal` };
+      if (within.op === "remove") return { ok: false, reason: `the entry at ${described(within.path)} is staged for removal` };
       if (!doc.amend) return { ok: false, reason: `the writer for ${key} cannot amend the staged edit at ${within.path}: its document has no amend` };
       const amended = doc.amend({ path: within.path, value: within.value }, operation);
       // The writer said the path is inside; an amend that says otherwise is the writer contradicting itself, a bug (FIX-005).
@@ -792,7 +903,7 @@ export async function openSession(options: {
     const { start, end, bytes } = written.edit;
     checkRange(base.length, start, end, "the writer");
     const clash = others.find(e => e.path !== path && overlaps(e, written.edit));
-    if (clash) return { ok: false, reason: `the edit overlaps the staged edit at ${clash.path}` };
+    if (clash) return { ok: false, reason: `the edit overlaps the staged edit at ${described(clash.path)}` };
     if (!staging) staged.set(key, (staging = { writer, version: against?.version ?? node.version, base, doc, edits: [] }));
     const edit: Staged = { path, start, end, bytes, status: "staged", ...(effective.op === "remove" ? { op: "remove" as const } : { op: effective.op, value: effective.value }) };
     // Replaced, the edit goes last: the list is in the order edits were staged, which a rebase reads.
@@ -814,15 +925,16 @@ export async function openSession(options: {
     const against = { version: entry.base, bytes: entry.bytes.slice() };
     const edits: SourceRestore["edits"][number][] = [];
     for (const saved of entry.edits) {
-      const operation: EditOperation | undefined = saved.op === "remove" ? { op: "remove", path: saved.path } : saved.value === undefined ? undefined : { op: saved.op, path: saved.path, value: saved.value };
+      const at = saved.region === undefined ? {} : { region: saved.region };
+      const operation: EditOperation | undefined = saved.op === "remove" ? { op: "remove", path: saved.path, ...at } : saved.value === undefined ? undefined : { op: saved.op, path: saved.path, value: saved.value, ...at };
       const result: StageResult = operation === undefined ? { ok: false, reason: `a ${saved.op} needs a value` } : await stageEdit(entry.location, operation, against);
       if (!result.ok) {
-        edits.push({ path: saved.path, outcome: "refused", reason: result.reason });
+        edits.push({ ...at, path: saved.path, outcome: "refused", reason: result.reason });
         continue;
       }
-      edits.push({ path: saved.path, outcome: "restored" });
+      edits.push({ ...at, path: saved.path, outcome: "restored" });
       // Its status is part of what was saved (FR-003): staging made it plain `staged`.
-      const put = staged.get(key)?.edits.find(e => e.path === saved.path);
+      const put = staged.get(key)?.edits.find(e => e.path === joinPath(saved.region, saved.path));
       if (put) {
         put.status = saved.status;
         if (saved.disk !== undefined) put.disk = saved.disk.slice();
@@ -887,7 +999,7 @@ export async function openSession(options: {
     const dropped = notices.slice(first).filter(n => n.outcome === "conflicted" && n.source === source);
     const remaining = staged.get(key);
     if (dropped.length > 0 || !remaining) {
-      const edits: SourceCommit["edits"] = dropped.map(n => ({ path: n.path, outcome: "conflicted", ...(n.reason === undefined ? {} : { reason: n.reason }), ...(n.detail === undefined ? {} : { detail: n.detail }) }));
+      const edits: SourceCommit["edits"] = dropped.map(n => ({ ...shown(n.path), outcome: "conflicted", ...(n.reason === undefined ? {} : { reason: n.reason }), ...(n.detail === undefined ? {} : { detail: n.detail }) }));
       return { cause: { source, location: key, outcome: "conflicted", edits } };
     }
     const bytes = splice(remaining.base, remaining.edits);
@@ -903,7 +1015,7 @@ export async function openSession(options: {
       }
       if (text !== undefined) findingsFor(handler, await sha256(bytes), text);
     }
-    const edits = remaining.edits.map((e): SourceCommit["edits"][number] => (e.status === "overrides" && e.disk ? { path: e.path, outcome: "overrode", disk: e.disk } : { path: e.path, outcome: "written" }));
+    const edits = remaining.edits.map((e): SourceCommit["edits"][number] => (e.status === "overrides" && e.disk ? { ...shown(e.path), outcome: "overrode", disk: e.disk } : { ...shown(e.path), outcome: "written" }));
     return { key, source, bytes, disk: read.bytes, version: await sha256(bytes), edits };
   }
 
@@ -1007,7 +1119,7 @@ export async function openSession(options: {
         staging.edits.map(
           (e): StagedEdit => ({
             source: idFor(key),
-            path: e.path,
+            ...shown(e.path),
             op: e.op,
             ...(e.value === undefined ? {} : { value: e.value }),
             base: staging.version,
@@ -1020,14 +1132,14 @@ export async function openSession(options: {
         ),
       ),
     save: () => ({
-      format: 1,
+      format: [...staged.values()].some(staging => staging.edits.some(e => e.path.startsWith(NUL))) ? 2 : 1,
       sources: [...staged].map(([key, staging]) => ({
         location: key,
         base: staging.version,
         bytes: staging.base.slice(),
         edits: staging.edits.map(e => ({
           op: e.op,
-          path: e.path,
+          ...shown(e.path),
           ...(e.value === undefined ? {} : { value: e.value }),
           status: e.status,
           ...(e.disk === undefined ? {} : { disk: e.disk.slice() }),
@@ -1036,7 +1148,7 @@ export async function openSession(options: {
     }),
     restore(saved) {
       let result: RestoreReport = { outcome: "refused", reason: "the session is closed", sources: [] };
-      if (saved.format !== 1) return Promise.resolve({ outcome: "refused", reason: `the saved index has format ${String(saved.format)}, and only format 1 is known`, sources: [] });
+      if (saved.format !== 1 && saved.format !== 2) return Promise.resolve({ outcome: "refused", reason: `the saved index has format ${String(saved.format)}, and only formats 1 and 2 are known`, sources: [] });
       return serialize(async () => {
         const sources: SourceRestore[] = [];
         for (const entry of saved.sources) sources.push(await restoreSource(entry));
@@ -1044,14 +1156,14 @@ export async function openSession(options: {
         return report([]);
       }).then(() => result);
     },
-    unstage: (location, path) =>
+    unstage: (location, path, region) =>
       serialize(async () => {
         const key = await keyFor(location);
         const staging = staged.get(key);
         if (!staging) return;
         if (path === undefined) staged.delete(key);
         else {
-          staging.edits = staging.edits.filter(e => e.path !== path);
+          staging.edits = staging.edits.filter(e => e.path !== joinPath(region, path));
           staging.preview = undefined;
           if (staging.edits.length === 0) staged.delete(key);
         }

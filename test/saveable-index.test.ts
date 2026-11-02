@@ -287,8 +287,8 @@ test("case 8: an unknown format is refused whole, and the index is untouched", a
   const second = await openOn(memory, "/g/a.yaml", [yamlWriter()], ["/g/b.yaml"]);
   await second.stage("/g/a.yaml", { op: "set", path: "/y", value: 8 });
   const before = second.index();
-  const report = await second.restore({ ...saved, format: 2 } as unknown as SavedIndex);
-  assert.deepEqual(report, { outcome: "refused", reason: "the saved index has format 2, and only format 1 is known", sources: [] });
+  const report = await second.restore({ ...saved, format: 3 } as unknown as SavedIndex);
+  assert.deepEqual(report, { outcome: "refused", reason: "the saved index has format 3, and only formats 1 and 2 are known", sources: [] });
   assert.deepEqual(second.index(), before);
   second.close();
 });
