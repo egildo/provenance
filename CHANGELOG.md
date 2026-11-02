@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.0 — 2026-11-02
+
+- **Regions for writing** ([Codeberg issue](https://codeberg.org/egildo/provenance/issues/3)). An edit can target a value inside text written in another language, such as YAML frontmatter inside Markdown. The enclosing language's handler reports the regions; `EditOperation`, `index()` entries, change notices and commit reports carry an optional `region`; `openSession` takes `regionWriters`, a table of writers keyed by language. The file is still staged and written as one: overlap checks, rebase and the atomic commit are unchanged, and a region that moves, or vanishes, is handled as any moved or gone target. `unstage(location, path?, region?)` takes the region.
+- A handler's regions are used only when sound (whole-number ranges inside the text, unique names, no overlap). A NUL character in a path or region name is refused.
+- **Saved index format 2**, written only when a region edit exists; a session without one still saves format 1. `restore` reads 1 and 2 and refuses any other.
+
+Breaking: `SavedIndex.format` is now `1 | 2`, so an exhaustive check on it stops compiling.
+
 ## 0.7.1 — 2026-10-30
 
 - **The write sandbox is judged at commit, not at load** ([Codeberg issue](https://codeberg.org/egildo/provenance/issues/2)). A directory swapped for a symbolic link after a source was loaded no longer lets a commit, or the put-back after a failed write, land outside the writable roots: both check the location again and refuse, naming the link. The Node host also refuses a write whose path holds a link. A small window between that check and the rename remains, because Node cannot write relative to an open directory.
