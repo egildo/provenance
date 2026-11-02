@@ -83,7 +83,7 @@ const GONE_CODES: ReadonlySet<string> = new Set(["edit-target-absent", "edit-par
 
 /**
  * A region's edit is held in the source's own staging with its path joined to the region's name, so every comparison of
- * paths, the overlap checks and the splice work unchanged; the public views split it again (`shown`).
+ * paths, the overlap checks and the splice work unchanged; the public views split it again (`splitPath`).
  */
 const NUL = "\u0000";
 const joinPath = (region: string | undefined, path: string) => (region === undefined ? path : `${NUL}${region}${NUL}${path}`);
@@ -92,7 +92,6 @@ const splitPath = (joined: string): { readonly path: string; readonly region?: s
   const cut = joined.indexOf(NUL, 1);
   return { region: joined.slice(1, cut), path: joined.slice(cut + 1) };
 };
-const shown = (joined: string): { readonly path: string; readonly region?: string } => splitPath(joined);
 const described = (joined: string) => {
   const { path, region } = splitPath(joined);
   return region === undefined ? path : `${path} in region ${region}`;
@@ -335,6 +334,12 @@ export async function openSession(options: {
     return findings;
   }
 
+  /** Whether a handler's regions can be trusted: whole-number ranges inside the text, uniquely named, none overlapping. */
+  const sound = (list: readonly { readonly name: string; readonly start: number; readonly end: number }[], length: number) =>
+    list.every(r => Number.isInteger(r.start) && Number.isInteger(r.end) && r.start >= 0 && r.start <= r.end && r.end <= length && !r.name.includes(NUL)) &&
+    new Set(list.map(r => r.name)).size === list.length &&
+    [...list].sort((a, b) => a.start - b.start).every((r, i, all) => i === 0 || (all[i - 1] as typeof r).end <= r.start);
+
   /** For a document made by `openDoc` over regions: the writer's own document, and a region's, opened on demand. */
   const parts = new WeakMap<WriterDocument, { readonly inner: WriterDocument; region(name: string): RegionDoc }>();
   type RegionDoc = { readonly ok: true; readonly doc: WriterDocument; readonly start: number } | { readonly ok: false; readonly reason: string; readonly code?: string };
@@ -356,7 +361,7 @@ export async function openSession(options: {
       return opening;
     }
     const found = findingsFor(handler, version, text).regions;
-    if (!found || found.length === 0) return opening;
+    if (!found || found.length === 0 || !sound(found, text.length)) return opening;
     const offsets = byteOffsets(text, found.flatMap(r => [r.start, r.end]));
     const inner = opening.document;
     const opened = new Map<string, RegionDoc>();
@@ -429,7 +434,7 @@ export async function openSession(options: {
   /** Sources the running commit has written. A disk write cannot be rolled back, so they stay committed. */
   const writtenKeys: string[] = [];
   const drained = (): { edits?: readonly EditNotice[] } => {
-    const edits = notices.splice(0).map((n): EditNotice => ({ ...n, ...shown(n.path) }));
+    const edits = notices.splice(0).map((n): EditNotice => ({ ...n, ...splitPath(n.path) }));
     return edits.length === 0 ? {} : { edits };
   };
 
@@ -457,6 +462,11 @@ export async function openSession(options: {
     staging.waiting = undefined;
     const doc = opening.document;
     for (const e of staging.edits) {
+      // An edit in a region the new version no longer has must not reach the writer as a joined path.
+      if (e.path.startsWith(NUL) && !parts.has(doc)) {
+        notices.push({ source, path: e.path, outcome: "conflicted", reason: "gone", detail: "the region is gone" });
+        continue;
+      }
       // The shift guard (FR-013) comes first: through a list that changed length, the path may name another item.
       if (shiftedIn(staging.doc, e.path, doc)) {
         notices.push({ source, path: e.path, outcome: "conflicted", reason: "shifted" });
@@ -834,6 +844,7 @@ export async function openSession(options: {
    * in place of the one the session holds; a source already being staged keeps the base it has.
    */
   async function stageEdit(location: string, requested: EditOperation, against?: { readonly version: string; readonly bytes: Uint8Array }): Promise<StageResult> {
+    if (requested.path.includes(NUL) || requested.region?.includes(NUL)) return { ok: false, reason: "a path or a region name cannot hold a NUL character" };
     const path = joinPath(requested.region, requested.path);
     // The operation as the staging holds it: a region's path is joined to its name.
     const operation: EditOperation = requested.op === "remove" ? { op: "remove", path } : { op: requested.op, path, value: requested.value };
@@ -999,7 +1010,7 @@ export async function openSession(options: {
     const dropped = notices.slice(first).filter(n => n.outcome === "conflicted" && n.source === source);
     const remaining = staged.get(key);
     if (dropped.length > 0 || !remaining) {
-      const edits: SourceCommit["edits"] = dropped.map(n => ({ ...shown(n.path), outcome: "conflicted", ...(n.reason === undefined ? {} : { reason: n.reason }), ...(n.detail === undefined ? {} : { detail: n.detail }) }));
+      const edits: SourceCommit["edits"] = dropped.map(n => ({ ...splitPath(n.path), outcome: "conflicted", ...(n.reason === undefined ? {} : { reason: n.reason }), ...(n.detail === undefined ? {} : { detail: n.detail }) }));
       return { cause: { source, location: key, outcome: "conflicted", edits } };
     }
     const bytes = splice(remaining.base, remaining.edits);
@@ -1015,7 +1026,7 @@ export async function openSession(options: {
       }
       if (text !== undefined) findingsFor(handler, await sha256(bytes), text);
     }
-    const edits = remaining.edits.map((e): SourceCommit["edits"][number] => (e.status === "overrides" && e.disk ? { ...shown(e.path), outcome: "overrode", disk: e.disk } : { ...shown(e.path), outcome: "written" }));
+    const edits = remaining.edits.map((e): SourceCommit["edits"][number] => (e.status === "overrides" && e.disk ? { ...splitPath(e.path), outcome: "overrode", disk: e.disk } : { ...splitPath(e.path), outcome: "written" }));
     return { key, source, bytes, disk: read.bytes, version: await sha256(bytes), edits };
   }
 
@@ -1119,7 +1130,7 @@ export async function openSession(options: {
         staging.edits.map(
           (e): StagedEdit => ({
             source: idFor(key),
-            ...shown(e.path),
+            ...splitPath(e.path),
             op: e.op,
             ...(e.value === undefined ? {} : { value: e.value }),
             base: staging.version,
@@ -1139,7 +1150,7 @@ export async function openSession(options: {
         bytes: staging.base.slice(),
         edits: staging.edits.map(e => ({
           op: e.op,
-          ...shown(e.path),
+          ...splitPath(e.path),
           ...(e.value === undefined ? {} : { value: e.value }),
           status: e.status,
           ...(e.disk === undefined ? {} : { disk: e.disk.slice() }),

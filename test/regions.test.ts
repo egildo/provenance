@@ -159,3 +159,72 @@ test("step 4: a colleague adds a line above the whole frontmatter: the region is
   assert.equal((await session.commit()).outcome, "committed");
   assert.equal(await text(memory), "pre=1\n---\ntitle: Annual report 2026\nclient: Rossi\n---\nintro=old\n");
 });
+
+test("a region that vanishes never sends its joined path to the enclosing writer", async t => {
+  const seen: string[] = [];
+  const spy = {
+    ...keyValue,
+    open: (bytes: Uint8Array) => {
+      const opening = keyValue.open(bytes);
+      if (!opening.ok) return opening;
+      const doc = opening.document;
+      return { ok: true as const, document: { ...doc, locate: (p: string) => (seen.push(p), doc.locate(p)), write: (p: string, v: never) => (seen.push(p), doc.write(p, v)) } };
+    },
+  };
+  const memory = createMemoryHost({ "/doc.conf": FILE });
+  const session = await openSession({ host: memory, entry: "/doc.conf", handlers: [stub()], writers: [spy], regionWriters: { yaml: yamlWriter() }, writable: ["/"] });
+  closing(t, session);
+  await title(session, "x");
+  await memory.write("/doc.conf", "intro=old\n");
+  await absorbed(session, "/doc.conf");
+  assert.deepEqual(session.index(), []);
+  assert.deepEqual(seen.filter(p => p.includes("\u0000")), []);
+});
+
+test("regions that are not sound are not used: bad range, overlap, duplicate name", async t => {
+  const regions = (list: object[]): Handler => ({ claims: l => l.endsWith(".conf"), analyze: () => ({ requests: [], regions: list as never }) });
+  const base = { name: "frontmatter", start: 4, end: 39, language: "yaml" };
+  const cases: Record<string, object[]> = {
+    "end before start": [{ ...base, start: 20, end: 10 }],
+    "past the text": [{ ...base, end: 9999 }],
+    "negative start": [{ ...base, start: -1 }],
+    "not an integer": [{ ...base, start: 4.5 }],
+    overlapping: [base, { ...base, name: "other", start: 30, end: 45 }],
+    "same name twice": [base, { ...base, start: 43, end: 52 }],
+  };
+  for (const [label, list] of Object.entries(cases)) {
+    const { session } = await opened(FILE, regions(list));
+    closing(t, session);
+    const result = await title(session, "x");
+    assert.equal(result.ok, false, label);
+    assert.deepEqual(await intro(session, "new"), { ok: true }, label);
+  }
+});
+
+test("a NUL in a path or a region name is refused, not read as a region", async t => {
+  const { session } = await opened();
+  closing(t, session);
+  const inPath = await session.stage("/doc.conf", { op: "set", path: "\u0000frontmatter\u0000/title", value: "x" });
+  assert.equal(inPath.ok, false);
+  const inRegion = await session.stage("/doc.conf", { op: "set", region: "front\u0000matter", path: "/title", value: "x" });
+  assert.equal(inRegion.ok, false);
+  assert.deepEqual(session.index(), []);
+});
+
+test("a region edit can remove a key, and an edit in the body is never inside one in the frontmatter", async t => {
+  const { memory, session } = await opened();
+  closing(t, session);
+  assert.deepEqual(await session.stage("/doc.conf", { op: "remove", region: "frontmatter", path: "/client" }), { ok: true });
+  // Same path text, other language: no containment across the region's border.
+  assert.deepEqual(await session.stage("/doc.conf", { op: "set", path: "intro", value: "new" }), { ok: true });
+  assert.equal((await session.commit()).outcome, "committed");
+  assert.equal(await text(memory), "---\ntitle: Annual report\n---\nintro=new\n");
+});
+
+test("adding to a key that exists is refused by the region's writer and stages nothing", async t => {
+  const { session } = await opened();
+  closing(t, session);
+  const added = await session.stage("/doc.conf", { op: "add", region: "frontmatter", path: "/title", value: "x" });
+  assert.equal(added.ok, false);
+  assert.deepEqual(session.index(), []);
+});
