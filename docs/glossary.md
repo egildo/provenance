@@ -62,7 +62,7 @@ Written with a capital, Provenance is the library.
 
 **Reconciliation.** The query that matches declared edges against observed ones and names every disagreement. It can run at any time, because observation is a window rather than a moment. *(observation)*
 
-**Region.** Part of a source's text that belongs to another language, reported by the source's handler as a finding. Becomes a virtual source.
+**Region.** Part of a source's text that belongs to another language, reported by the source's handler as a finding: a name, a range and a language, such as the YAML frontmatter of a Markdown file. Since v0.8.0 a region can be written: an edit names it, and the writer for its language writes it, while the file is still staged and written as one. A region marked opaque refuses edits. In analysis a region is designed to become a virtual source; that is not built.
 
 **Read pass.** One render's reads through the session: a Host-shaped view (`pass.host`) that records every location read, with the version of the bytes it handed out, and every location it tried and found nothing at. Ending the pass makes those locations the roots its label contributes, replacing the previous pass's. One live pass per label.
 
@@ -90,4 +90,4 @@ Written with a capital, Provenance is the library.
 
 **Version.** The SHA-256 of a source's exact stored bytes. A new version invalidates every fact derived from the old one, by construction.
 
-**Virtual source.** A source carved out of a region of another source, the **enclosing source**, such as a `<style>` block inside HTML. Analysed by the handler for its language, carrying a map back to its enclosing source, and resolving its requests against its enclosing source's base. The design synthesis called this the "host"; renamed because the host is the I/O supplier.
+**Virtual source.** *Designed, not built.* A source carved out of a region of another source, the **enclosing source**, such as a `<style>` block inside HTML. Analysed by the handler for its language, carrying a map back to its enclosing source, and resolving its requests against its enclosing source's base. The design synthesis called this the "host"; renamed because the host is the I/O supplier.

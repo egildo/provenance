@@ -82,7 +82,7 @@ A handler is a pure function from text to findings; it never touches the filesys
 ```
 analyze(text) → {
   requests: [{ range, request, kind }],   // what this text asks for
-  regions:  [{ range, language, map }],   // embedded text for another handler
+  regions:  [{ name, start, end, language, opaque? }],   // embedded text for another handler
   base?:    string                        // e.g. HTML <base href>
 }
 ```
@@ -119,7 +119,7 @@ Include cycles are recorded as edges and reported, never followed forever.
 
 ### Embedded languages
 
-A region becomes a **virtual source**, analyzed by the handler for its language, carrying a map back to the host. Nesting composes: Markdown holds raw HTML, which holds a `<style>`, which holds a `url()`, and the font it names still points to the right line of the right Markdown file.
+*Built for writing only (v0.8.0, see the write-back design); the virtual source and its map are not built.* A region becomes a **virtual source**, analyzed by the handler for its language, carrying a map back to the host. Nesting composes: Markdown holds raw HTML, which holds a `<style>`, which holds a `url()`, and the font it names still points to the right line of the right Markdown file.
 
 The map is a list of segments, after Volar's mappings. Most segments are linear: offsets shift by a constant. Where the host escapes text (an HTML entity inside a `style` attribute), the segment is marked **opaque**: positions inside it map to the whole segment, and edits there are refused (see Open questions). Volar attaches flags to each mapping saying which features it supports; ours needs only one, editable.
 

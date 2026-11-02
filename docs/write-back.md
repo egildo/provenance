@@ -246,6 +246,29 @@ naming the link.
 One window stays open: between the host's check and its rename, a directory can still be swapped for a
 link. Closing it needs writes relative to an open directory (`openat`), which Node does not offer.
 
+## Regions for writing (2026-11-02, v0.8.0, Codeberg issue 3)
+
+A value can live inside text that belongs to another language: YAML frontmatter inside Markdown. The rulings:
+
+- **The enclosing language's handler finds a region**, as its findings already report requests: a name, a
+  range and a language (`Findings.regions`). Regions that are not sound (a range outside the text, two with
+  one name, two that overlap) are not used. Volar and Vue's SFC compiler find blocks the same way.
+- **An edit names its region** in a field of its own, `region`, beside `location` and `path`; the path is
+  the region's writer's own. Index entries, notices and commit reports carry it too.
+- **The writer comes from the language**, through the session's `regionWriters` table (`{ yaml: yamlWriter() }`),
+  not from a location's extension.
+- **The file stays one source.** A region's edit is held in the source's own staging, its path joined to the
+  region's name, so overlap, rebase, the shift guard and the atomic commit work unchanged. The region's
+  writer answers on the region's bytes, and its splices are moved by the region's start into the file.
+- **A rebase finds the region again** in the new version, by name, so a region that moved carries its edits
+  with it. A region that is gone conflicts its edits as `gone`.
+- **Refused at staging:** an opaque region (the enclosing text escapes it), an unknown region, a language with
+  no writer, and a NUL character in a path or a region name.
+- **The saved index** is format 2 only when a region edit exists, so a session without one still saves format 1.
+
+Left out: regions inside regions, editing opaque text, a region's own requests in analysis (the virtual
+source), and adding a region where there is none, such as frontmatter to a file without it.
+
 ## Parked, with what brings each back
 
 - **Where an edit to an inherited value lands** — into the layer that won (as DevTools edits the
